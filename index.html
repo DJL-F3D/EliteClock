@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Elite Clock — Control Panel</title>
+<style>
+  :root{--bg:#000;--panel:#0a0a0a;--border:#00ff41;--accent:#00ff41;
+    --txt:#00ff41;--dim:#005a1a;--warn:#ff8c00;--red:#ff2222;
+    --btn-bg:#001a00;--btn-hover:#003300;--font:'Courier New',monospace}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:var(--font);
+    min-height:100vh;padding:12px}
+  h1{text-align:center;letter-spacing:4px;font-size:1.4rem;
+    border-bottom:1px solid var(--dim);padding-bottom:8px;margin-bottom:16px;
+    text-shadow:0 0 12px var(--accent)}
+  h2{font-size:.85rem;letter-spacing:3px;color:var(--dim);margin-bottom:10px;
+    border-left:3px solid var(--accent);padding-left:8px}
+  .panel{background:var(--panel);border:1px solid var(--dim);
+    border-radius:2px;padding:14px;margin-bottom:14px}
+  .row{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+  label{min-width:160px;font-size:.82rem;letter-spacing:1px}
+  input[type=text],input[type=password],input[type=number],select{
+    background:#000;border:1px solid var(--dim);color:var(--txt);
+    font-family:var(--font);font-size:.82rem;padding:5px 8px;
+    border-radius:0;flex:1;min-width:120px}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  input[type=range]{-webkit-appearance:none;flex:1;height:4px;
+    background:var(--dim);outline:none;border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;
+    width:14px;height:14px;background:var(--accent);border-radius:0;cursor:pointer}
+  .val{min-width:52px;text-align:right;font-size:.82rem;color:var(--accent)}
+  button{background:var(--btn-bg);border:1px solid var(--accent);
+    color:var(--txt);font-family:var(--font);font-size:.82rem;
+    letter-spacing:2px;padding:7px 18px;cursor:pointer;text-transform:uppercase}
+  button:hover{background:var(--btn-hover)}
+  button.warn{border-color:var(--warn);color:var(--warn)}
+  button.warn:hover{background:#1a0900}
+  .shiprow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .shipname{flex:1;font-size:1rem;letter-spacing:2px;text-align:center;
+    border:1px solid var(--dim);padding:6px 12px;color:var(--accent)}
+  .toggle{display:inline-flex;border:1px solid var(--dim);overflow:hidden}
+  .toggle button{border:none;border-right:1px solid var(--dim)}
+  .toggle button:last-child{border-right:none}
+  .toggle button.active{background:#003300;color:var(--accent);
+    border-bottom:2px solid var(--accent)}
+  #status{text-align:center;font-size:.8rem;color:var(--dim);
+    margin-top:6px;min-height:1.2rem}
+  .net-list{list-style:none;margin-top:6px}
+  .net-list li{padding:4px 8px;cursor:pointer;border-bottom:1px solid #050505;
+    font-size:.8rem}
+  .net-list li:hover{background:var(--btn-hover)}
+  .clock-disp{font-size:2.4rem;letter-spacing:8px;text-align:center;
+    padding:12px;text-shadow:0 0 16px var(--accent)}
+  .footer{text-align:center;font-size:.7rem;color:var(--dim);margin-top:20px}
+  .badge{display:inline-block;padding:2px 8px;font-size:.7rem;
+    border:1px solid;margin-left:6px;vertical-align:middle}
+  .badge.online{border-color:var(--accent);color:var(--accent)}
+  .badge.ap{border-color:var(--warn);color:var(--warn)}
+  @media(max-width:480px){label{min-width:120px}h1{font-size:1.1rem}}
+</style>
+</head>
+<body>
+
+<h1>⋅·· ELITE CLOCK ··⋅
+  <span id="netbadge" class="badge"></span>
+</h1>
+
+<div class="clock-disp" id="clockdisp">--:--:--</div>
+
+<!-- ── SHIP CONTROL ── -->
+<div class="panel">
+  <h2>SHIP DISPLAY</h2>
+  <div class="shiprow">
+    <button id="btnPrev" onclick="prevShip()">◀ PREV</button>
+    <div class="shipname" id="shipname">---</div>
+    <button id="btnNext" onclick="nextShip()">NEXT ▶</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label>RENDER MODE</label>
+    <div class="toggle">
+      <button id="btnWire" class="active" onclick="setShaded(false)">WIREFRAME</button>
+      <button id="btnShad" onclick="setShaded(true)">SHADED</button>
+    </div>
+  </div>
+  <div class="row">
+    <label>ROTATION SPEED</label>
+    <input type="range" id="rotSpeed" min="0" max="100" value="12"
+           oninput="rotSpeedChange(this.value)"/>
+    <span class="val" id="rotSpeedVal">0.6°/f</span>
+  </div>
+  <div class="row">
+    <label>SHIP DURATION</label>
+    <input type="range" id="shipDur" min="10" max="600" value="30"
+           oninput="shipDurChange(this.value)"/>
+    <span class="val" id="shipDurVal">30s</span>
+  </div>
+  <button onclick="saveDisplay()">SAVE DISPLAY SETTINGS</button>
+</div>
+
+<!-- ── WI-FI SETUP ── -->
+<div class="panel" id="wifiPanel">
+  <h2>WI-FI CONFIGURATION</h2>
+  <div class="row">
+    <label>SSID</label>
+    <input type="text" id="ssid" placeholder="Network name"/>
+    <button onclick="scanNetworks()">SCAN</button>
+  </div>
+  <ul class="net-list" id="netList"></ul>
+  <div class="row">
+    <label>PASSWORD</label>
+    <input type="password" id="wpass" placeholder="Password"/>
+  </div>
+  <button onclick="saveWifi()">CONNECT &amp; SAVE</button>
+  <span id="wifiStatus" style="margin-left:10px;font-size:.8rem"></span>
+</div>
+
+<!-- ── TIME SETUP ── -->
+<div class="panel">
+  <h2>TIME CONFIGURATION</h2>
+  <div class="row">
+    <label>GMT OFFSET (hrs)</label>
+    <select id="gmtOffset" onchange="updateTimePreview()">
+      <script>
+        for(var i=-12;i<=14;i++){
+          var s=i>=0?'+':'';
+          document.write('<option value="'+i+'">UTC'+s+i+'</option>');
+        }
+      </script>
+    </select>
+  </div>
+  <div class="row">
+    <label>DAYLIGHT SAVING</label>
+    <div class="toggle">
+      <button id="dstOff" class="active" onclick="setDST(false)">OFF</button>
+      <button id="dstOn"  onclick="setDST(true)">+1 HOUR</button>
+    </div>
+  </div>
+  <div class="row">
+    <label>MANUAL TIME</label>
+    <input type="text" id="manTime" placeholder="YYYY-MM-DD HH:MM:SS"/>
+    <button onclick="setManualTime()">SET</button>
+  </div>
+  <div id="timePreview" style="font-size:.8rem;color:var(--dim);margin-bottom:8px"></div>
+  <button onclick="saveTime()">SAVE TIME SETTINGS</button>
+</div>
+
+<!-- ── HOME ASSISTANT ── -->
+<div class="panel">
+  <h2>HOME ASSISTANT (MQTT)</h2>
+  <div class="row">
+    <label>BROKER HOST</label>
+    <input type="text" id="haHost" placeholder="192.168.x.x or hostname"/>
+  </div>
+  <div class="row">
+    <label>PORT</label>
+    <input type="number" id="haMqttPort" value="1883" min="1" max="65535"/>
+  </div>
+  <div class="row">
+    <label>USERNAME</label>
+    <input type="text" id="haMqttUser" placeholder="optional"/>
+  </div>
+  <div class="row">
+    <label>PASSWORD</label>
+    <input type="password" id="haMqttPass" placeholder="optional"/>
+  </div>
+  <button onclick="saveHA()">SAVE HA SETTINGS</button>
+</div>
+
+<!-- ── STATUS ── -->
+<div id="status"></div>
+
+<div class="footer">
+  ELITE CLOCK v1.0 · ESP32-C3 · 240×320<br>
+  Elite © 1984 Acornsoft — Ian Bell & David Braben
+</div>
+
+<script>
+var state = {ship:0, numShips:14, shaded:false, rotSpeed:0.6, shipDur:30,
+             dst:false, gmt:0};
+
+// ── Fetch current state from device on load ───────────────────────────────
+function init(){
+  fetch('/api/state').then(r=>r.json()).then(s=>{
+    state = s;
+    applyState();
+    updateClock();
+  }).catch(()=>{setStatus('Device not responding')});
+}
+
+function applyState(){
+  document.getElementById('shipname').textContent   = state.shipName || '---';
+  document.getElementById('rotSpeed').value  = Math.round(state.rotSpeed*20);
+  document.getElementById('rotSpeedVal').textContent = state.rotSpeed.toFixed(1)+'°/f';
+  document.getElementById('shipDur').value   = state.shipDur;
+  document.getElementById('shipDurVal').textContent = fmtDur(state.shipDur);
+  document.getElementById('ssid').value      = state.ssid || '';
+  document.getElementById('gmtOffset').value = state.gmt  || 0;
+  document.getElementById('haHost').value    = state.haHost || '';
+  document.getElementById('haMqttPort').value= state.haMqttPort || 1883;
+  document.getElementById('haMqttUser').value= state.haMqttUser || '';
+  setShaded(state.shaded, true);
+  setDST(state.dst, true);
+
+  var badge = document.getElementById('netbadge');
+  if(state.mode === 'AP'){
+    badge.textContent='AP MODE'; badge.className='badge ap';
+  } else {
+    badge.textContent='CONNECTED'; badge.className='badge online';
+  }
+}
+
+function fmtDur(s){
+  if(s<60) return s+'s';
+  return Math.floor(s/60)+'m'+(s%60?s%60+'s':'');
+}
+
+// ── Clock display ─────────────────────────────────────────────────────────
+function updateClock(){
+  fetch('/api/time').then(r=>r.json()).then(t=>{
+    document.getElementById('clockdisp').textContent=t.time||'--:--:--';
+  }).catch(()=>{});
+  setTimeout(updateClock, 1000);
+}
+
+// ── Ship navigation ───────────────────────────────────────────────────────
+function prevShip(){
+  postCmd('/api/ship','action=prev').then(r=>r.json()).then(s=>{
+    document.getElementById('shipname').textContent=s.shipName;
+    state.ship=s.ship;
+  });
+}
+function nextShip(){
+  postCmd('/api/ship','action=next').then(r=>r.json()).then(s=>{
+    document.getElementById('shipname').textContent=s.shipName;
+    state.ship=s.ship;
+  });
+}
+
+// ── Render toggle ─────────────────────────────────────────────────────────
+function setShaded(v, noSend){
+  state.shaded=v;
+  document.getElementById('btnWire').classList.toggle('active',!v);
+  document.getElementById('btnShad').classList.toggle('active', v);
+  if(!noSend) postCmd('/api/display','shaded='+(v?1:0));
+}
+
+// ── DST toggle ────────────────────────────────────────────────────────────
+function setDST(v, noSend){
+  state.dst=v;
+  document.getElementById('dstOff').classList.toggle('active',!v);
+  document.getElementById('dstOn').classList.toggle('active', v);
+  updateTimePreview();
+}
+
+// ── Sliders ───────────────────────────────────────────────────────────────
+function rotSpeedChange(v){
+  var deg = (v/20).toFixed(1);
+  document.getElementById('rotSpeedVal').textContent=deg+'°/f';
+  state.rotSpeed=parseFloat(deg);
+}
+function shipDurChange(v){
+  document.getElementById('shipDurVal').textContent=fmtDur(parseInt(v));
+  state.shipDur=parseInt(v);
+}
+
+// ── Save display settings ─────────────────────────────────────────────────
+function saveDisplay(){
+  var body='rotSpeed='+state.rotSpeed+'&shipDur='+state.shipDur+'&shaded='+(state.shaded?1:0);
+  postCmd('/api/display',body).then(()=>setStatus('Display settings saved'));
+}
+
+// ── Wi-Fi ─────────────────────────────────────────────────────────────────
+function scanNetworks(){
+  setStatus('Scanning...');
+  fetch('/api/wifi/scan').then(r=>r.json()).then(nets=>{
+    var ul=document.getElementById('netList');
+    ul.innerHTML='';
+    nets.forEach(n=>{
+      var li=document.createElement('li');
+      li.textContent=n;
+      li.onclick=()=>{document.getElementById('ssid').value=n};
+      ul.appendChild(li);
+    });
+    setStatus('Found '+nets.length+' networks');
+  });
+}
+
+function saveWifi(){
+  var s=document.getElementById('ssid').value;
+  var p=document.getElementById('wpass').value;
+  if(!s){setStatus('Enter SSID');return}
+  document.getElementById('wifiStatus').textContent='Connecting...';
+  postCmd('/api/wifi/connect','ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p))
+    .then(r=>r.json()).then(res=>{
+      document.getElementById('wifiStatus').textContent=res.ok?'Connected!':'Failed';
+      if(res.ok) setTimeout(()=>location.reload(),2000);
+    }).catch(()=>{
+      document.getElementById('wifiStatus').textContent='Saved - rebooting...';
+    });
+}
+
+// ── Time ──────────────────────────────────────────────────────────────────
+function updateTimePreview(){
+  var off=parseInt(document.getElementById('gmtOffset').value)||0;
+  var dst=state.dst?'+DST(+1h)':'';
+  document.getElementById('timePreview').textContent='UTC'+( off>=0?'+':'')+off+' '+dst;
+}
+
+function saveTime(){
+  var off=document.getElementById('gmtOffset').value;
+  postCmd('/api/time','gmt='+off+'&dst='+(state.dst?1:0))
+    .then(()=>setStatus('Time settings saved. NTP syncing...'));
+}
+
+function setManualTime(){
+  var t=document.getElementById('manTime').value.trim();
+  if(!t){setStatus('Enter date/time');return}
+  postCmd('/api/time/manual','dt='+encodeURIComponent(t))
+    .then(r=>r.json()).then(res=>setStatus(res.ok?'Time set':'Error setting time'));
+}
+
+// ── Home Assistant ────────────────────────────────────────────────────────
+function saveHA(){
+  var body='host='+encodeURIComponent(document.getElementById('haHost').value)
+          +'&port='+document.getElementById('haMqttPort').value
+          +'&user='+encodeURIComponent(document.getElementById('haMqttUser').value)
+          +'&pass='+encodeURIComponent(document.getElementById('haMqttPass').value);
+  postCmd('/api/ha',body).then(()=>setStatus('HA MQTT settings saved'));
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function postCmd(url, body){
+  return fetch(url,{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:body});
+}
+function setStatus(msg){
+  document.getElementById('status').textContent=msg;
+  setTimeout(()=>document.getElementById('status').textContent='',4000);
+}
+
+window.onload=init;
+</script>
+</body>
+</html>
