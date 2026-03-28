@@ -55,6 +55,18 @@ jobs:
           cd elite-clock
           pio run --target buildfs --environment esp32-c3-super-mini
 
+      # ── 7. Report firmware size ───────────────────────────────────────────
+      - name: Firmware size report
+        run: |
+          cd elite-clock
+          pio run --environment esp32-c3-super-mini --target size 2>/dev/null || true
+          echo ""
+          FW=$(find .pio/build/esp32-c3-super-mini -name 'firmware.bin' | head -1)
+          FS=$(find .pio/build/esp32-c3-super-mini -name 'littlefs.bin' | head -1)
+          echo "=== Binary sizes ==="
+          [ -f "$FW" ] && echo "firmware.bin : $(du -h "$FW" | cut -f1)"
+          [ -f "$FS" ] && echo "littlefs.bin : $(du -h "$FS" | cut -f1)"
+
       # ── 7. Locate and rename output files ─────────────────────────────────
       - name: Collect output binaries
         run: |

@@ -1,79 +1,96 @@
 #pragma once
 // =============================================================================
 //  renderer.h — 3-D ship renderer
-//  Implements rotation, perspective projection, back-face culling,
-//  wireframe mode and flat-shaded mode for the Elite ship definitions.
-//  Targets the 240×320 TFT_eSPI display on the ESP32-C3.
+//
+//  Pipeline:
+//    1. Build 3×3 rotation matrix from Euler angles (Ry * Rx * Rz)
+//    2. Auto-scale ship vertices to fit viewport
+//    3. Perspective-project all vertices onto 2-D screen
+//    4. Back-face cull each face using rotated face normals (dot with +Z)
+//    5. Wireframe: draw visible edges only
+//    6. Shaded:  painter's-sort faces back-to-front, fill + edge highlight
+//
+//  COORDINATE SYSTEM
+//    +X = right,  +Y = up,  +Z = towards camera.
+//    Camera is at (0, 0, camZ); ship centred at origin.
+//
+//  SPRITE DIMENSIONS
+//    The sprite is 240 × SPRITE_H (208) pixels, pushed at y=HDR_H on TFT.
+//    SHIP_VIEW_X/Y are the centre within the sprite.
 // =============================================================================
 
 #include <TFT_eSPI.h>
 #include <math.h>
 #include "ships.h"
 
-// ── Colour palette (Elite monochrome palette, rendered as bright on black) ──
-//  0=cyan, 1=yellow, 2=green, 3=red, 4=white
-static const uint16_t SHIP_COLOURS[5] = {
+// ── Ship colour palette ───────────────────────────────────────────────────────
+//   0=cyan, 1=yellow, 2=green, 3=red, 4=white  (index from ShipDef::colour)
+const uint16_t SHIP_COLOURS[5] = {
     TFT_CYAN, TFT_YELLOW, TFT_GREEN, TFT_RED, TFT_WHITE
 };
 
-// ── Rendering parameters ─────────────────────────────────────────────────────
-#define SHIP_VIEW_X   120   // Centre of ship view area (x)
-#define SHIP_VIEW_Y   120   // Centre of ship view area (y) — top 240px area
-#define SHIP_VIEW_R   100   // Radius of usable area
-#define FOV           160   // Perspective focal length (pixels)
+// ── Viewport: ship is drawn into a 240 × 208 sprite ─────────────────────────
+#define SHIP_VIEW_X   120    // sprite x centre
+#define SHIP_VIEW_Y   104    // sprite y centre  (208/2 = 104)
+#define SHIP_VIEW_R    92    // safe rendering radius (< 104, leaves margin)
+#define SHIP_FOV      180    // perspective focal length (px)
 
-// ── Float 3D types ───────────────────────────────────────────────────────────
-struct V3 { float x, y, z; };
+// ── Float 3-D vector ─────────────────────────────────────────────────────────
+struct V3f { float x, y, z; };
 
-// ── Renderer state ───────────────────────────────────────────────────────────
+// =============================================================================
 class Renderer {
 public:
-    float  angleX = 15.0f;   // degrees
-    float  angleY = 0.0f;
-    float  angleZ = 0.0f;
-    float  rotSpeedY = 0.6f; // degrees per frame
-    bool   shaded   = false;
+    float angleX =  15.0f;   // elevation (degrees) — set by main.cpp per frame
+    float angleY =   0.0f;   // azimuth  (degrees) — incremented each frame
+    float angleZ =   0.0f;   // roll     (degrees) — unused by default
+    bool  shaded  = false;
 
-    // Projected screen coordinates for each vertex (max 32 ships)
-    int16_t  sx[32], sy[32];
-    bool     vVis[32]; // vertex visible flag
+    // Projected screen coords + visibility flags (up to 32 verts per ship)
+    int16_t sx[32], sy[32];
+    bool    vVis[32];
 
-    // ── Main entry — render one ship onto tft ────────────────────────────────
-    void render(TFT_eSPI &tft, const ShipDef &ship) {
-        // Build rotation matrix from Euler angles
-        float rx = DEG_TO_RAD * angleX;
-        float ry = DEG_TO_RAD * angleY;
-        float rz = DEG_TO_RAD * angleZ;
+    // ==========================================================================
+    //  render()  — called every frame with the sprite as 'disp'
+    // ==========================================================================
+    void render(TFT_eSPI &disp, const ShipDef &ship) {
 
-        float cosX = cosf(rx), sinX = sinf(rx);
-        float cosY = cosf(ry), sinY = sinf(ry);
-        float cosZ = cosf(rz), sinZ = sinf(rz);
+        // ── Build rotation matrix R = Ry * Rx * Rz ───────────────────────
+        float rx  = DEG_TO_RAD * angleX;
+        float ry  = DEG_TO_RAD * angleY;
+        float rz  = DEG_TO_RAD * angleZ;
 
-        // Composite rotation matrix (Ry * Rx * Rz)
+        float cx = cosf(rx), sx_ = sinf(rx);
+        float cy = cosf(ry), sy_ = sinf(ry);
+        float cz = cosf(rz), sz_ = sinf(rz);
+
+        // Composite: m = Ry(ry) * Rx(rx) * Rz(rz)
         float m[3][3];
-        m[0][0] =  cosY*cosZ + sinX*sinY*sinZ;
-        m[0][1] =  cosX*sinZ;
-        m[0][2] = -sinY*cosZ + sinX*cosY*sinZ;
-        m[1][0] = -cosY*sinZ + sinX*sinY*cosZ;
-        m[1][1] =  cosX*cosZ;
-        m[1][2] =  sinY*sinZ + sinX*cosY*cosZ;
-        m[2][0] =  cosX*sinY;
-        m[2][1] = -sinX;
-        m[2][2] =  cosX*cosY;
+        m[0][0] =  cy*cz + sy_*sx_*sz_;
+        m[0][1] =  cx*sz_;
+        m[0][2] = -sy_*cz + cy*sx_*sz_;
 
-        // Determine auto-scale: fit bounding sphere to viewport
+        m[1][0] = -cy*sz_ + sy_*sx_*cz;
+        m[1][1] =  cx*cz;
+        m[1][2] =  sy_*sz_ + cy*sx_*cz;
+
+        m[2][0] =  cx*sy_;
+        m[2][1] = -sx_;
+        m[2][2] =  cx*cy;
+
+        // ── Auto-scale: fit bounding sphere to SHIP_VIEW_R ────────────────
         float maxR = 1.0f;
         for (int i = 0; i < ship.numVerts; i++) {
-            float d = sqrtf((float)ship.verts[i].x*(float)ship.verts[i].x +
-                            (float)ship.verts[i].y*(float)ship.verts[i].y +
-                            (float)ship.verts[i].z*(float)ship.verts[i].z);
+            float d = sqrtf((float)ship.verts[i].x * ship.verts[i].x +
+                            (float)ship.verts[i].y * ship.verts[i].y +
+                            (float)ship.verts[i].z * ship.verts[i].z);
             if (d > maxR) maxR = d;
         }
         float scale = (float)SHIP_VIEW_R / maxR;
-        float camZ  = 3.0f * maxR;   // camera z distance for perspective
+        float camZ  = 2.8f * maxR * scale;
 
-        // Transform all vertices
-        V3 world[32];
+        // ── Transform all vertices into camera space ───────────────────────
+        V3f world[32];
         for (int i = 0; i < ship.numVerts; i++) {
             float vx = ship.verts[i].x * scale;
             float vy = ship.verts[i].y * scale;
@@ -84,99 +101,104 @@ public:
             world[i].z = m[2][0]*vx + m[2][1]*vy + m[2][2]*vz + camZ;
         }
 
-        // Perspective project
+        // ── Perspective project ────────────────────────────────────────────
         for (int i = 0; i < ship.numVerts; i++) {
-            float dz = world[i].z;
-            if (dz < 0.01f) dz = 0.01f;
-            sx[i] = (int16_t)SHIP_VIEW_X + (int16_t)(world[i].x * FOV / dz);
-            sy[i] = (int16_t)SHIP_VIEW_Y - (int16_t)(world[i].y * FOV / dz);
+            float dz = (world[i].z < 0.01f) ? 0.01f : world[i].z;
+            sx[i] = (int16_t)(SHIP_VIEW_X + world[i].x * SHIP_FOV / dz);
+            sy[i] = (int16_t)(SHIP_VIEW_Y - world[i].y * SHIP_FOV / dz);
         }
 
-        // Determine face visibility (back-face culling)
-        // A face is visible if its normal (rotated into view space) has +z
+        // ── Back-face culling ─────────────────────────────────────────────
+        // Face visible if rotated outward normal has positive Z component
+        // (faces toward camera, which is along +Z).
+        // A small tolerance avoids cracking on silhouette edges.
         bool fVis[64] = {};
         for (int f = 0; f < ship.numFaces; f++) {
             const Face &face = ship.faces[f];
             float nx = face.normal.x;
             float ny = face.normal.y;
             float nz = face.normal.z;
-            // Rotate normal
-            float wx = m[0][0]*nx + m[0][1]*ny + m[0][2]*nz;
-            float wy = m[1][0]*nx + m[1][1]*ny + m[1][2]*nz;
             float wz = m[2][0]*nx + m[2][1]*ny + m[2][2]*nz;
-            // View direction is +Z; face visible if dot(wn, view_dir) > 0
-            // We also add a small offset for edge faces
-            fVis[f] = (wz > -0.1f);
-            (void)wx; (void)wy;
+            fVis[f] = (wz > -0.05f);
         }
 
-        // Vertex visibility: visible if any adjacent face is visible
+        // ── Vertex visibility: visible if any adjacent face is visible ─────
         for (int v = 0; v < ship.numVerts; v++) vVis[v] = false;
         for (int e = 0; e < ship.numEdges; e++) {
-            const Edge &ed = ship.edges[e];
-            if (fVis[ed.f1] || fVis[ed.f2]) {
-                vVis[ed.v1] = true;
-                vVis[ed.v2] = true;
+            if (fVis[ship.edges[e].f1] || fVis[ship.edges[e].f2]) {
+                vVis[ship.edges[e].v1] = true;
+                vVis[ship.edges[e].v2] = true;
             }
         }
 
+        // ── Dispatch to render mode ────────────────────────────────────────
         if (shaded) {
-            renderShaded(tft, ship, fVis, world, m, camZ, scale);
+            renderShaded(disp, ship, fVis, world, m);
         } else {
-            renderWireframe(tft, ship, fVis);
+            renderWireframe(disp, ship, fVis);
         }
     }
 
 private:
-    // ── Wireframe mode ────────────────────────────────────────────────────────
-    void renderWireframe(TFT_eSPI &tft, const ShipDef &ship, const bool *fVis) {
+    // ==========================================================================
+    //  WIREFRAME
+    // ==========================================================================
+    void renderWireframe(TFT_eSPI &disp, const ShipDef &ship, const bool *fVis) {
         uint16_t col = SHIP_COLOURS[ship.colour];
         for (int e = 0; e < ship.numEdges; e++) {
             const Edge &ed = ship.edges[e];
             if (!fVis[ed.f1] && !fVis[ed.f2]) continue;
             if (!vVis[ed.v1] || !vVis[ed.v2])  continue;
-            tft.drawLine(sx[ed.v1], sy[ed.v1],
-                         sx[ed.v2], sy[ed.v2], col);
+            disp.drawLine(sx[ed.v1], sy[ed.v1],
+                          sx[ed.v2], sy[ed.v2], col);
         }
     }
 
-    // ── Flat-shaded mode ─────────────────────────────────────────────────────
-    void renderShaded(TFT_eSPI &tft, const ShipDef &ship, const bool *fVis,
-                      const V3 *world, float m[3][3], float camZ, float scale) {
-        // Light direction (normalised) — slightly above-right from camera
-        const float LX =  0.5f, LY =  0.7f, LZ = -0.5f;
+    // ==========================================================================
+    //  FLAT-SHADED (painter's algorithm — back to front)
+    // ==========================================================================
+    void renderShaded(TFT_eSPI &disp, const ShipDef &ship, const bool *fVis,
+                      const V3f *world, float m[3][3]) {
 
-        // Painter's sort — render faces back to front
-        // Simple: sort by average Z of rotated face centroid (descending)
-        int order[64];
-        float fZ[64];
+        // ── Light direction (camera space, normalised) ────────────────────
+        // Directional light slightly above-right, toward camera (+Z).
+        const float LX =  0.45f, LY = 0.65f, LZ = 0.62f;
+
+        // ── Average depth per face for painter's sort ─────────────────────
+        int   order[64];
+        float fDepth[64];
         for (int f = 0; f < ship.numFaces; f++) {
-            order[f] = f;
-            fZ[f] = 0;
-            if (!fVis[f]) { fZ[f] = -1e9f; continue; }
+            order[f]  = f;
+            fDepth[f] = 1e9f;
+            if (!fVis[f]) continue;
+            float sum = 0;
             for (int i = 0; i < ship.faces[f].n; i++) {
-                fZ[f] += world[ship.faces[f].verts[i]].z;
+                sum += world[ship.faces[f].verts[i]].z;
             }
-            fZ[f] /= ship.faces[f].n;
+            fDepth[f] = sum / ship.faces[f].n;
         }
-        // Bubble sort (face count is small)
-        for (int a = 0; a < ship.numFaces - 1; a++) {
-            for (int b = 0; b < ship.numFaces - 1 - a; b++) {
-                if (fZ[order[b]] < fZ[order[b+1]]) {
-                    int tmp = order[b]; order[b] = order[b+1]; order[b+1] = tmp;
-                }
+        // Insertion sort — faces per ship is always small (≤24)
+        for (int a = 1; a < ship.numFaces; a++) {
+            int   kIdx  = order[a];
+            float kDepth = fDepth[kIdx];
+            int   b     = a - 1;
+            while (b >= 0 && fDepth[order[b]] < kDepth) {
+                order[b + 1] = order[b];
+                b--;
             }
+            order[b + 1] = kIdx;
         }
 
         uint16_t baseCol = SHIP_COLOURS[ship.colour];
 
+        // ── Draw faces back → front ────────────────────────────────────────
         for (int fi = 0; fi < ship.numFaces; fi++) {
             int f = order[fi];
             if (!fVis[f]) continue;
 
             const Face &face = ship.faces[f];
 
-            // Rotated face normal
+            // Rotate face normal into camera space
             float nx = face.normal.x / 127.0f;
             float ny = face.normal.y / 127.0f;
             float nz = face.normal.z / 127.0f;
@@ -184,57 +206,45 @@ private:
             float wy = m[1][0]*nx + m[1][1]*ny + m[1][2]*nz;
             float wz = m[2][0]*nx + m[2][1]*ny + m[2][2]*nz;
 
-            // Diffuse lighting
-            float dot = wx*LX + wy*LY + wz*LZ;
-            if (dot < 0) dot = 0;
-            float ambient = 0.25f;
-            float intensity = ambient + (1.0f - ambient) * dot;
-            if (intensity > 1.0f) intensity = 1.0f;
+            // Lambertian diffuse + ambient term
+            float diff = wx*LX + wy*LY + wz*LZ;
+            if (diff < 0) diff = 0;
+            float I = 0.22f + 0.78f * diff;
+            if (I > 1.0f) I = 1.0f;
 
-            uint16_t fc = scaledColour(baseCol, intensity);
+            // Slightly darker fill, brighter edges — gives crisp cel-shade look
+            uint16_t fillCol = scaledColour(baseCol, I * 0.80f);
+            uint16_t edgeCol = scaledColour(baseCol, I);
 
-            // Fill polygon (fan triangulation from vertex 0)
+            // Screen-space polygon vertices
             int16_t px[8], py[8];
             for (int i = 0; i < face.n; i++) {
                 px[i] = sx[face.verts[i]];
                 py[i] = sy[face.verts[i]];
             }
-            fillPolygon(tft, px, py, face.n, fc);
 
-            // Draw edges on top (dim)
-            uint16_t edgeCol = scaledColour(baseCol, intensity * 0.5f + 0.1f);
+            // Fan-triangulate and fill
+            for (int i = 1; i < face.n - 1; i++) {
+                disp.fillTriangle(px[0], py[0],
+                                  px[i], py[i],
+                                  px[i+1], py[i+1], fillCol);
+            }
+
+            // Edge outline
             for (int i = 0; i < face.n; i++) {
-                int j = (i+1) % face.n;
-                tft.drawLine(px[i], py[i], px[j], py[j], edgeCol);
+                int j = (i + 1) % face.n;
+                disp.drawLine(px[i], py[i], px[j], py[j], edgeCol);
             }
         }
     }
 
-    // ── Polygon fill (fan-triangulated, scanline within TFT_eSPI) ─────────────
-    void fillPolygon(TFT_eSPI &tft, int16_t *px, int16_t *py, int n, uint16_t col) {
-        // Fan triangulation from vertex 0
-        for (int i = 1; i < n - 1; i++) {
-            fillTriangle(tft, px[0], py[0], px[i], py[i], px[i+1], py[i+1], col);
-        }
-    }
-
-    void fillTriangle(TFT_eSPI &tft,
-                      int16_t x0, int16_t y0,
-                      int16_t x1, int16_t y1,
-                      int16_t x2, int16_t y2,
-                      uint16_t col) {
-        tft.fillTriangle(x0, y0, x1, y1, x2, y2, col);
-    }
-
-    // ── Scale a 16-bit RGB colour by an intensity factor ──────────────────────
+    // ── Scale RGB565 colour by intensity t in [0,1] ───────────────────────
     static uint16_t scaledColour(uint16_t c, float t) {
-        // RGB565: RRRRR GGGGGG BBBBB
-        uint8_t r = ((c >> 11) & 0x1F);
-        uint8_t g = ((c >>  5) & 0x3F);
-        uint8_t b =  (c        & 0x1F);
-        r = (uint8_t)(r * t);
-        g = (uint8_t)(g * t);
-        b = (uint8_t)(b * t);
+        if (t <= 0.0f) return 0u;
+        if (t >= 1.0f) return c;
+        uint8_t r = (uint8_t)(((c >> 11) & 0x1Fu) * t);
+        uint8_t g = (uint8_t)(((c >>  5) & 0x3Fu) * t);
+        uint8_t b = (uint8_t)( (c        & 0x1Fu) * t);
         return (uint16_t)((r << 11) | (g << 5) | b);
     }
 };
