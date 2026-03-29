@@ -3,11 +3,10 @@ name: Build Elite Clock Firmware
 on:
   push:
     branches: [ main, master ]
-    tags:
-      - 'v*'
+    tags:      [ 'v*' ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:      # allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   build:
@@ -15,11 +14,38 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ── 1. Checkout repository ────────────────────────────────────────────
+      # ── 1. Checkout ───────────────────────────────────────────────────────────
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── 2. Cache PlatformIO packages (speeds up subsequent runs) ─────────
+      # ── 2. System dependencies ────────────────────────────────────────────────
+      # autoconf + libtool + build-essential are required if PlatformIO falls
+      # back to compiling mklittlefs or any other tool from source.
+      # Installing them up-front prevents the "No such file or directory: ./configure"
+      # error that appears when the pre-built binary is missing or incompatible.
+      - name: Install system build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            autoconf \
+            libtool \
+            build-essential \
+            python3-dev
+
+      # ── 3. Python + PlatformIO ────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO Core
+        run: |
+          pip install --upgrade pip
+          pip install "platformio==6.1.16"
+
+      # ── 4. Cache PlatformIO packages ──────────────────────────────────────────
+      # Cache key includes platformio.ini so any dependency/platform change
+      # busts the cache and forces a fresh download.
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
         with:
@@ -27,84 +53,74 @@ jobs:
             ~/.platformio/.cache
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          key: pio-${{ runner.os }}-${{ hashFiles('elite-clock/platformio.ini') }}
           restore-keys: |
             pio-${{ runner.os }}-
 
-      # ── 3. Set up Python (PlatformIO requires it) ─────────────────────────
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # ── 4. Install PlatformIO CLI ─────────────────────────────────────────
-      - name: Install PlatformIO
+      # ── 5. Pre-fetch platform and libraries ───────────────────────────────────
+      # Running 'pio pkg install' before the build resolves all dependencies in
+      # one step with visible output, making it easier to spot download failures
+      # separately from compile errors.
+      - name: Install PlatformIO dependencies
         run: |
-          pip install --upgrade pip
-          pip install platformio
+          cd elite-clock
+          pio pkg install --environment esp32-c3-super-mini
 
-      # ── 5. Build firmware .bin ────────────────────────────────────────────
+      # ── 6. Build firmware ─────────────────────────────────────────────────────
       - name: Build firmware
         run: |
           cd elite-clock
           pio run --environment esp32-c3-super-mini
 
-      # ── 6. Build LittleFS filesystem image (contains web UI) ──────────────
-      - name: Build filesystem image
+      # ── 7. Build LittleFS image (web UI) ──────────────────────────────────────
+      - name: Build LittleFS filesystem image
         run: |
           cd elite-clock
           pio run --target buildfs --environment esp32-c3-super-mini
 
-      # ── 7. Report firmware size ───────────────────────────────────────────
+      # ── 8. Collect and rename output files ────────────────────────────────────
+      - name: Collect build artifacts
+        run: |
+          mkdir -p artifacts
+          BUILD=elite-clock/.pio/build/esp32-c3-super-mini
+
+          # firmware.bin — main application
+          cp "$BUILD/firmware.bin" artifacts/elite-clock-firmware.bin
+
+          # bootloader.bin
+          BL=$(find "$BUILD" -name 'bootloader.bin' | head -1)
+          [ -n "$BL" ] && cp "$BL" artifacts/bootloader.bin
+
+          # partitions.bin
+          PT=$(find "$BUILD" -name 'partitions.bin' | head -1)
+          [ -n "$PT" ] && cp "$PT" artifacts/partitions.bin
+
+          # littlefs.bin — web UI filesystem
+          FS=$(find "$BUILD" -name 'littlefs.bin' | head -1)
+          [ -n "$FS" ] && cp "$FS" artifacts/elite-clock-filesystem.bin
+
+          echo "=== Artifacts collected ==="
+          ls -lh artifacts/
+
+      # ── 9. Size report ────────────────────────────────────────────────────────
       - name: Firmware size report
         run: |
           cd elite-clock
           pio run --environment esp32-c3-super-mini --target size 2>/dev/null || true
-          echo ""
-          FW=$(find .pio/build/esp32-c3-super-mini -name 'firmware.bin' | head -1)
-          FS=$(find .pio/build/esp32-c3-super-mini -name 'littlefs.bin' | head -1)
-          echo "=== Binary sizes ==="
-          [ -f "$FW" ] && echo "firmware.bin : $(du -h "$FW" | cut -f1)"
-          [ -f "$FS" ] && echo "littlefs.bin : $(du -h "$FS" | cut -f1)"
 
-      # ── 7. Locate and rename output files ─────────────────────────────────
-      - name: Collect output binaries
-        run: |
-          mkdir -p artifacts
-
-          # Main firmware
-          FW=$(find elite-clock/.pio/build/esp32-c3-super-mini -name 'firmware.bin' | head -1)
-          cp "$FW" artifacts/elite-clock-firmware.bin
-
-          # Bootloader
-          BL=$(find elite-clock/.pio/build/esp32-c3-super-mini -name 'bootloader.bin' | head -1)
-          [ -f "$BL" ] && cp "$BL" artifacts/bootloader.bin || true
-
-          # Partition table
-          PT=$(find elite-clock/.pio/build/esp32-c3-super-mini -name 'partitions.bin' | head -1)
-          [ -f "$PT" ] && cp "$PT" artifacts/partitions.bin || true
-
-          # LittleFS filesystem image (web UI)
-          FS=$(find elite-clock/.pio/build/esp32-c3-super-mini -name 'littlefs.bin' | head -1)
-          [ -f "$FS" ] && cp "$FS" artifacts/elite-clock-filesystem.bin || true
-
-          echo "=== Build artifacts ==="
-          ls -lh artifacts/
-
-      # ── 8. Generate flash script ──────────────────────────────────────────
+      # ── 10. Flash instructions ────────────────────────────────────────────────
       - name: Generate flash instructions
         run: |
-          cat > artifacts/FLASH_INSTRUCTIONS.md << 'EOF'
+          cat > artifacts/FLASH_INSTRUCTIONS.md << 'ENDDOC'
           # Elite Clock — Flash Instructions
 
-          ## Requirements
-          Install esptool.py:
-          ```
+          ## Prerequisites
+          ```bash
           pip install esptool
           ```
 
-          ## Flash all-in-one (recommended)
-          Replace `/dev/ttyUSB0` (Linux) or `COM3` (Windows) with your port.
+          ## Flash everything (first install)
+          Replace `/dev/ttyUSB0` (Linux/Mac) or `COM3` (Windows) with your serial port.
 
           ```bash
           esptool.py --chip esp32c3 \
@@ -116,53 +132,66 @@ jobs:
             --flash_mode dio \
             --flash_freq 80m \
             --flash_size 4MB \
-            0x0000  bootloader.bin \
-            0x8000  partitions.bin \
-            0x10000 elite-clock-firmware.bin \
+            0x0000   bootloader.bin \
+            0x8000   partitions.bin \
+            0x10000  elite-clock-firmware.bin \
             0x290000 elite-clock-filesystem.bin
           ```
 
-          ## Flash firmware only (over-the-air update)
+          ## Firmware update only
           ```bash
           esptool.py --chip esp32c3 --port /dev/ttyUSB0 --baud 460800 \
             write_flash 0x10000 elite-clock-firmware.bin
           ```
 
-          ## Flash filesystem only (update web UI)
+          ## Web UI (filesystem) update only
           ```bash
           esptool.py --chip esp32c3 --port /dev/ttyUSB0 --baud 460800 \
             write_flash 0x290000 elite-clock-filesystem.bin
           ```
 
-          ## First boot
-          1. If no Wi-Fi is saved, connect to **EliteClock-Setup** (pass: `eliteclock`)
-          2. Navigate to **http://192.168.4.1** to configure Wi-Fi and time
-          3. After connecting to Wi-Fi, find the device IP in your router's
-             DHCP list and navigate there to access the full control panel.
+          ## OTA (over-the-air) update after first flash
+          ```bash
+          # PlatformIO
+          pio run --target upload --upload-port eliteclock.local
+
+          # Arduino IDE
+          # Tools > Port > eliteclock (Network)
+          # Password: eliteota
+          ```
+
+          ## First-boot setup
+          1. Power on the device. If no Wi-Fi credentials are saved it launches a hotspot.
+          2. Connect to **EliteClock-Setup** (password: `eliteclock`)
+          3. Browse to **http://192.168.4.1** — the setup portal opens automatically.
+          4. Enter your Wi-Fi SSID and password and click CONNECT.
+          5. After reconnecting, find the device IP in your router DHCP table, or
+             browse to **http://eliteclock.local** if your OS supports mDNS.
 
           ## Pin assignment (ESP32-C3 Super Mini)
-          | Signal | GPIO |
-          |--------|------|
-          | TFT MOSI | 6 |
-          | TFT SCK  | 4 |
-          | TFT CS   | 7 |
-          | TFT DC   | 2 |
-          | TFT RST  | 3 |
-          | TFT BL   | 8 |
-          | Touch CS | 9 |
-          | Touch IRQ| 10 |
-          EOF
+          | Signal      | GPIO |
+          |-------------|------|
+          | TFT MOSI    | 6    |
+          | TFT SCK     | 4    |
+          | TFT MISO    | 5    |
+          | TFT CS      | 7    |
+          | TFT DC      | 2    |
+          | TFT RST     | 3    |
+          | TFT BL      | 8    |
+          | Touch CS    | 9    |
+          | Touch IRQ   | 10   |
+          ENDDOC
 
-      # ── 9. Upload all artifacts ───────────────────────────────────────────
-      - name: Upload firmware artifacts
+      # ── 11. Upload artifacts (available from the Actions run page) ────────────
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: elite-clock-${{ github.sha }}
           path: artifacts/
           retention-days: 30
 
-      # ── 10. Create GitHub Release (only on version tags) ──────────────────
-      - name: Create Release
+      # ── 12. Create GitHub Release on version tags ─────────────────────────────
+      - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
