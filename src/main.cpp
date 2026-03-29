@@ -100,6 +100,7 @@ bool     g_shipChanged   = false;   // triggers header + radar redraw
 int      g_shipChangeDir = 1;       // +1 next, -1 prev (for future transition FX)
 bool     g_showInfo      = false;   // false = radar scanner, true = ship info overlay
 bool     g_wifiReconnectPending = false;  // set by web UI to trigger reconnect
+bool     g_spriteOK      = false;   // false if createSprite() failed (low memory)
 
 // ── Hardware instances ────────────────────────────────────────────────────────
 TFT_eSPI            tft;
@@ -287,6 +288,13 @@ void drawRadarPanel(bool showInfo) {
 //  The sprite is positioned BELOW the header so it cannot overwrite it.
 // =============================================================================
 void renderShipFrame() {
+    if (!g_spriteOK) {
+        // Sprite allocation failed — draw directly on TFT (flickers but works)
+        tft.fillRect(0, SPRITE_Y, SCR_W, SPRITE_H, COL_BG);
+        renderer.shaded   = g_shaded;
+        renderer.render(tft, SHIPS[g_currentShip]);
+        return;
+    }
     shipSprite.fillSprite(COL_BG);
 
     // ── Static star-field (pre-seeded per ship on ship change) ────────────
@@ -390,15 +398,11 @@ void handleTouch() {
 // =============================================================================
 void setup() {
     Serial.begin(115200);
-    delay(400);
-    Serial.println("\n\n╔══════════════════════╗");
-    Serial.println(  "║   ELITE CLOCK v1.1   ║");
-    Serial.println(  "╚══════════════════════╝");
+    delay(200);
 
-    // ── Load persistent settings ──────────────────────────────────────────
+    // ── 1. Load settings (needed before WiFi so we know saved credentials) ──
     settings.begin();
     g_currentShip  = settings.cfg.currentShip;
-    // Clamp: if NUM_SHIPS decreased since last save, index could be out of range
     if (g_currentShip >= NUM_SHIPS) {
         g_currentShip = 0;
         settings.cfg.currentShip = 0;
@@ -408,90 +412,25 @@ void setup() {
     g_rotSpeed     = settings.cfg.rotSpeed;
     g_shipDuration = settings.cfg.shipDuration;
 
-    // ── TFT init ──────────────────────────────────────────────────────────
-    tft.init();
-    tft.setRotation(0);
-    tft.fillScreen(COL_BG);
-    tft.setTextFont(1);
-    tft.setTextSize(1);
-
-    // ── Boot splash ───────────────────────────────────────────────────────
-    tft.setTextColor(COL_GREEN, COL_BG);
-    tft.setTextSize(2);
-    tft.setCursor(18, 50);  tft.print("** ELITE CLOCK **");
-    tft.setTextSize(1);
-    tft.setTextColor(COL_DKGREEN, COL_BG);
-    tft.setCursor(60, 80);  tft.print("ESP32-C3 v1.1");
-    tft.setCursor(36, 94);  tft.print("240x320 UC8230 TFT");
-
-    auto splashLine = [&](int row, const char *label) {
-        tft.setTextColor(COL_DKGREEN, COL_BG);
-        tft.setCursor(20, 120 + row * 16);
-        tft.print(label);
-    };
-    splashLine(0, "INIT DISPLAY    ...");
-    splashLine(1, "INIT TOUCH      ...");
-    splashLine(2, "WIFI            ...");
-    splashLine(3, "WEB SERVER      ...");
-    splashLine(4, "MDNS            ...");
-    splashLine(5, "OTA             ...");
-    splashLine(6, "HA MQTT         ...");
-
-    auto splashOK = [&](int row, const char *msg, uint16_t col) {
-        tft.setTextColor(col, COL_BG);
-        tft.setCursor(140, 120 + row * 16);
-        tft.print(msg);
-    };
-
-    // ── Create ship sprite ────────────────────────────────────────────────
-    //   Size: SCR_W × SPRITE_H (240 × 208). Pushed at y=SPRITE_Y=22.
-    if (!shipSprite.createSprite(SCR_W, SPRITE_H)) {
-        Serial.println("[ERROR] Sprite allocation failed! Check PSRAM.");
-    }
-    shipSprite.setColorDepth(16);
-    splashOK(0, "OK", COL_GREEN);
-
-    // ── Touchscreen ───────────────────────────────────────────────────────
-    touch.begin();
-    touch.setRotation(1);
-    splashOK(1, "OK", COL_GREEN);
-
-    // ── Seed stars for initial ship ───────────────────────────────────────
-    seedStars(g_currentShip);
-
-    // ── Wi-Fi ─────────────────────────────────────────────────────────────
+    // ── 2. WiFi — start AP or connect BEFORE display init ─────────────────
+    // This must happen first. If tft.init() hangs (wrong pins, bad display),
+    // the AP still appears and the web interface is reachable for diagnostics.
     wifiMgr.begin();
-    if (wifiMgr.isConnected()) {
-        splashOK(2, "CONNECTED", COL_GREEN);
-        tft.setCursor(20, 120 + 2 * 16 + 8);
-        tft.setTextColor(COL_DKGREEN, COL_BG);
-        tft.printf("  %s", wifiMgr.localIP.c_str());
-    } else {
-        splashOK(2, wifiMgr.isAP() ? "AP STARTED" : "NO WIFI", COL_AMBER);
-    }
 
-    // ── Web server ────────────────────────────────────────────────────────
+    // ── 3. Web server ──────────────────────────────────────────────────────
     webUI.begin();
-    splashOK(3, "OK", COL_GREEN);
 
-    // ── mDNS — device accessible as http://eliteclock.local ──────────────
+    // ── 4. mDNS ───────────────────────────────────────────────────────────
     if (wifiMgr.isConnected()) {
         if (MDNS.begin("eliteclock")) {
             MDNS.addService("http", "tcp", 80);
-            Serial.println("[mDNS] http://eliteclock.local");
-            splashOK(4, "eliteclock.local", COL_GREEN);
-        } else {
-            splashOK(4, "FAILED", COL_AMBER);
         }
-    } else {
-        splashOK(4, "N/A", COL_DKGREEN);
     }
 
-    // ── OTA firmware update ───────────────────────────────────────────────
+    // ── 5. OTA ────────────────────────────────────────────────────────────
     if (wifiMgr.isConnected()) {
         ArduinoOTA.setHostname("eliteclock");
-        ArduinoOTA.setPassword("eliteota");   // change as desired
-
+        ArduinoOTA.setPassword("eliteota");
         ArduinoOTA.onStart([]() {
             tft.fillScreen(COL_BG);
             tft.setTextColor(COL_GREEN, COL_BG);
@@ -515,22 +454,63 @@ void setup() {
             tft.setTextColor(COL_GREEN, COL_BG);
             tft.println("Complete - rebooting");
         });
-        ArduinoOTA.onError([](ota_error_t err) {
-            (void)err; // Serial not available inside a no-capture lambda
-        });
+        ArduinoOTA.onError([](ota_error_t err) { (void)err; });
         ArduinoOTA.begin();
-        splashOK(5, "READY (:8266)", COL_GREEN);
-    } else {
-        splashOK(5, "N/A", COL_DKGREEN);
     }
 
-    // ── Home Assistant MQTT (always init; connects only when host is set) ─
+    // ── 6. MQTT ───────────────────────────────────────────────────────────
     haMqtt.begin();
-    splashOK(6, strlen(settings.cfg.haHost) > 0 ? "CONNECTING" : "NO HOST", COL_AMBER);
 
-    delay(1800);
+    // ── 7. Display ────────────────────────────────────────────────────────
+    // WiFi is already up so the AP/web UI works even if this hangs.
+    tft.init();
+    tft.setRotation(0);
+    tft.fillScreen(COL_BG);
+    tft.setTextFont(1);
+    tft.setTextSize(1);
 
-    // ── Build initial screen ──────────────────────────────────────────────
+    // Boot splash
+    tft.setTextColor(COL_GREEN, COL_BG);
+    tft.setTextSize(2);
+    tft.setCursor(18, 50);
+    tft.print("** ELITE CLOCK **");
+    tft.setTextSize(1);
+    tft.setTextColor(COL_DKGREEN, COL_BG);
+    tft.setCursor(60, 80);   tft.print("ESP32-C3 v1.1");
+    tft.setCursor(24, 94);   tft.print("240x320 UC8230 TFT");
+
+    // Show WiFi status on display
+    tft.setCursor(20, 120);
+    if (wifiMgr.isConnected()) {
+        tft.setTextColor(COL_GREEN, COL_BG);
+        tft.printf("WIFI: %s", wifiMgr.localIP.c_str());
+    } else if (wifiMgr.isAP()) {
+        tft.setTextColor(COL_AMBER, COL_BG);
+        tft.print("AP: " AP_SSID);
+        tft.setCursor(20, 136);
+        tft.printf("  %s", wifiMgr.localIP.c_str());
+    }
+
+    // ── 8. Sprite ─────────────────────────────────────────────────────────
+    // Allocate after WiFi (WiFi stack is already reserved so heap is stable).
+    // If allocation fails, g_spriteOK=false and we draw directly on TFT.
+    g_spriteOK = shipSprite.createSprite(SCR_W, SPRITE_H);
+    if (g_spriteOK) {
+        shipSprite.setColorDepth(16);
+    } else {
+        tft.setCursor(20, 152);
+        tft.setTextColor(COL_AMBER, COL_BG);
+        tft.print("LOW MEM: direct draw");
+    }
+
+    // ── 9. Touch and stars ────────────────────────────────────────────────
+    touch.begin();
+    touch.setRotation(1);
+    seedStars(g_currentShip);
+
+    delay(1200);
+
+    // ── 10. Main UI ───────────────────────────────────────────────────────
     tft.fillScreen(COL_BG);
     drawHeader();
     drawRadarPanel(false);
@@ -539,7 +519,7 @@ void setup() {
     lastFrameTime  = millis();
     lastClockDraw  = millis();
 
-    Serial.printf("[Elite Clock] Running — ship: %s  IP: %s\n",
+    Serial.printf("[Elite Clock] Ready — ship: %s  WiFi: %s\n",
                   getShipName(g_currentShip), wifiMgr.localIP.c_str());
 }
 
