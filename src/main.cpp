@@ -516,7 +516,7 @@ void setup() {
             tft.println("Complete - rebooting");
         });
         ArduinoOTA.onError([](ota_error_t err) {
-            Serial.printf("[OTA] Error %u\n", err);
+            (void)err; // Serial not available inside a no-capture lambda
         });
         ArduinoOTA.begin();
         splashOK(5, "READY (:8266)", COL_GREEN);
