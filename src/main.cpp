@@ -37,7 +37,12 @@
 #include "ha_mqtt.h"
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
-#define TOUCH_IRQ_PIN  10   // T_IRQ from XPT2046
+// TOUCH_CS is intentionally NOT defined via TFT_eSPI build flags — doing so
+// causes TFT_eSPI's ESP32-C3 processor to include SPIFFS.h (for calibration
+// storage), which is unavailable on Arduino-ESP32 2.x and breaks compilation.
+// We drive the XPT2046_Touchscreen library directly using this local define.
+#define TOUCH_CS_PIN   9    // XPT2046 chip select
+#define TOUCH_IRQ_PIN  10   // XPT2046 interrupt (T_IRQ)
 
 // ── Display layout ────────────────────────────────────────────────────────────
 #define SCR_W       240
@@ -97,7 +102,7 @@ bool     g_wifiReconnectPending = false;  // set by web UI to trigger reconnect
 
 // ── Hardware instances ────────────────────────────────────────────────────────
 TFT_eSPI            tft;
-XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ_PIN);
+XPT2046_Touchscreen touch(TOUCH_CS_PIN, TOUCH_IRQ_PIN);
 Renderer            renderer;
 
 // ── Timing ────────────────────────────────────────────────────────────────────
