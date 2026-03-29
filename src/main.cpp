@@ -98,6 +98,7 @@ float    g_rotSpeed      = 0.6f;
 uint16_t g_shipDuration  = 30;
 bool     g_shipChanged   = false;   // triggers header + radar redraw
 int      g_shipChangeDir = 1;       // +1 next, -1 prev (for future transition FX)
+bool     g_showInfo      = false;   // false = radar scanner, true = ship info overlay
 bool     g_wifiReconnectPending = false;  // set by web UI to trigger reconnect
 
 // ── Hardware instances ────────────────────────────────────────────────────────

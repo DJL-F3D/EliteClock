@@ -88,7 +88,7 @@ public:
         doc["ship"]     = SHIPS[g_currentShip].name;
         doc["shipIdx"]  = g_currentShip;
         doc["shaded"]   = g_shaded ? "ON" : "OFF";
-        doc["rotSpeed"] = serialised(String(g_rotSpeed, 1));
+        doc["rotSpeed"] = g_rotSpeed;
         doc["duration"] = g_shipDuration;
         char buf[256];
         serializeJson(doc, buf, sizeof(buf));
