@@ -29,11 +29,13 @@ const uint16_t SHIP_COLOURS[5] = {
     TFT_CYAN, TFT_YELLOW, TFT_GREEN, TFT_RED, TFT_WHITE
 };
 
-// ── Viewport: ship is drawn into a 240 × 208 sprite ─────────────────────────
-#define SHIP_VIEW_X   120    // sprite x centre
-#define SHIP_VIEW_Y   104    // sprite y centre  (208/2 = 104)
-#define SHIP_VIEW_R    92    // safe rendering radius (< 104, leaves margin)
-#define SHIP_FOV      180    // perspective focal length (px)
+// ── Viewport: ship sprite is 180 × 218 px, pushed at (150, 22) ──────────────
+// Landscape 480x320: left panel 150px + ship 180px + right panel 150px
+// Header 22px + ship 218px + radar 80px = 320px
+#define SHIP_VIEW_X    90    // centre of 180px sprite
+#define SHIP_VIEW_Y   109    // centre of 218px sprite
+#define SHIP_VIEW_R    82    // safe rendering radius
+#define SHIP_FOV      200    // perspective focal length
 
 // ── Float 3-D vector ─────────────────────────────────────────────────────────
 struct V3f { float x, y, z; };
