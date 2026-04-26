@@ -31,6 +31,7 @@
 #include <ArduinoOTA.h>
 #include <time.h>
 #include <math.h>
+#include "esp_task_wdt.h"
 #include "ships.h"
 #include "renderer.h"
 #include "settings.h"
@@ -106,7 +107,14 @@ bool     g_wifiReconnectPending = false;
 bool     g_spriteOK      = false;
 
 // ── Hardware ──────────────────────────────────────────────────────────────────
-TFT_eSPI            tft;
+// IMPORTANT: Declared as pointers, NOT global objects.
+// TFT_eSPI's global constructor calls SPI.begin() which on ESP32-C3 with
+// framework 2.0.18 triggers the hardware watchdog (TG1WDT_SYS_RST) before
+// setup() is ever called, causing an infinite reboot loop.
+// Pointers have no constructor — the objects are created inside setup()
+// AFTER esp_task_wdt_deinit() has removed the watchdog.
+TFT_eSPI   *tft        = nullptr;
+TFT_eSprite *shipSprite = nullptr;
 XPT2046_Touchscreen touch(TOUCH_CS_PIN, TOUCH_IRQ_PIN);
 Renderer            renderer;
 
@@ -119,7 +127,7 @@ uint32_t lastTouchTime  = 0;
 bool     touchWasDown   = false;
 
 // ── Ship sprite (180 × 218, pushed at 150,22) ─────────────────────────────────
-TFT_eSprite shipSprite = TFT_eSprite(&tft);
+
 
 // ── Star-field (pre-computed per ship) ────────────────────────────────────────
 struct Star { int16_t x, y; uint16_t col; };
@@ -165,7 +173,7 @@ void drawAnimBars(int16_t x, int16_t y, int16_t w, uint32_t now) {
         // i=0 drawn at bottom, i=5 at top
         int16_t by = y + (5 - i) * 13;
         uint16_t col = (active == i) ? COL_WHITE : BAR_DIM[i];
-        tft.fillRect(x, by, w, 10, col);
+        tft->fillRect(x, by, w, 10, col);
     }
 }
 
@@ -175,41 +183,41 @@ void drawAnimBars(int16_t x, int16_t y, int16_t w, uint32_t now) {
 //  Drawn directly on TFT (not in sprite). Redrawn on ship/shaded change.
 // =============================================================================
 void drawHeader() {
-    tft.fillRect(0, 0, SCR_W, HDR_H, COL_BG);
-    tft.drawFastHLine(0, HDR_H - 1, SCR_W, COL_BORDER);
+    tft->fillRect(0, 0, SCR_W, HDR_H, COL_BG);
+    tft->drawFastHLine(0, HDR_H - 1, SCR_W, COL_BORDER);
 
-    tft.setTextSize(1);
+    tft->setTextSize(1);
 
     // Nav hints
-    tft.setTextColor(COL_DKGREEN, COL_BG);
-    tft.setCursor(2, 7);
-    tft.print("<<");
-    tft.setCursor(SCR_W - 14, 7);
-    tft.print(">>");
+    tft->setTextColor(COL_DKGREEN, COL_BG);
+    tft->setCursor(2, 7);
+    tft->print("<<");
+    tft->setCursor(SCR_W - 14, 7);
+    tft->print(">>");
 
     // Ship name — large, centred, yellow
     const char *name = SHIPS[g_currentShip].name;
-    tft.setTextSize(2);
+    tft->setTextSize(2);
     int tw = strlen(name) * 12;
-    tft.setTextColor(COL_YELLOW, COL_BG);
-    tft.setCursor((SCR_W - tw) / 2, 4);
-    tft.print(name);
+    tft->setTextColor(COL_YELLOW, COL_BG);
+    tft->setCursor((SCR_W - tw) / 2, 4);
+    tft->print(name);
 
     // Shaded mode badge left of ship name (small)
     if (g_shaded) {
-        tft.setTextSize(1);
-        tft.setTextColor(COL_ORANGE, COL_BG);
-        tft.setCursor(20, 7);
-        tft.print("[SHAD]");
+        tft->setTextSize(1);
+        tft->setTextColor(COL_ORANGE, COL_BG);
+        tft->setCursor(20, 7);
+        tft->print("[SHAD]");
     }
 
     // Ship index right-aligned
     char idx[8];
     snprintf(idx, sizeof(idx), "%d/%d", g_currentShip + 1, NUM_SHIPS);
-    tft.setTextSize(1);
-    tft.setTextColor(COL_DKGREEN, COL_BG);
-    tft.setCursor(SCR_W - 30, 7);
-    tft.print(idx);
+    tft->setTextSize(1);
+    tft->setTextColor(COL_DKGREEN, COL_BG);
+    tft->setCursor(SCR_W - 30, 7);
+    tft->print(idx);
 }
 
 // =============================================================================
@@ -224,28 +232,28 @@ void drawShipInfo() {
     const ShipLore  *lr  = ship.lore;
 
     // ── Clear both panels ─────────────────────────────────────────────────
-    tft.fillRect(0,          HDR_H, LEFT_W,  SHIP_SH, COL_BG);
-    tft.fillRect(SCR_W - RIGHT_W, HDR_H, RIGHT_W, SHIP_SH, COL_BG);
+    tft->fillRect(0,          HDR_H, LEFT_W,  SHIP_SH, COL_BG);
+    tft->fillRect(SCR_W - RIGHT_W, HDR_H, RIGHT_W, SHIP_SH, COL_BG);
 
     // Vertical separator lines
-    tft.drawFastVLine(LEFT_W - 1,          HDR_H, SHIP_SH, COL_BORDER);
-    tft.drawFastVLine(SCR_W - RIGHT_W,     HDR_H, SHIP_SH, COL_BORDER);
+    tft->drawFastVLine(LEFT_W - 1,          HDR_H, SHIP_SH, COL_BORDER);
+    tft->drawFastVLine(SCR_W - RIGHT_W,     HDR_H, SHIP_SH, COL_BORDER);
 
-    tft.setTextSize(1);
+    tft->setTextSize(1);
 
     // ── Left panel: lore & performance ───────────────────────────────────
     int lx = 3;
     int ly = HDR_H + 5;
     auto lbl = [&](const char *s) {
-        tft.setTextColor(COL_CYAN, COL_BG);
-        tft.setCursor(lx, ly);
-        tft.print(s);
+        tft->setTextColor(COL_CYAN, COL_BG);
+        tft->setCursor(lx, ly);
+        tft->print(s);
         ly += 10;
     };
     auto val = [&](const char *s) {
-        tft.setTextColor(COL_YELLOW, COL_BG);
-        tft.setCursor(lx + 4, ly);
-        tft.print(s);
+        tft->setTextColor(COL_YELLOW, COL_BG);
+        tft->setCursor(lx + 4, ly);
+        tft->print(s);
         ly += 10;
     };
     auto valFmt = [&](const char *fmt, ...) {
@@ -308,15 +316,15 @@ void drawShipInfo() {
     int rx = SCR_W - RIGHT_W + 3;
     int ry = HDR_H + 5;
     auto rlbl = [&](const char *s) {
-        tft.setTextColor(COL_CYAN, COL_BG);
-        tft.setCursor(rx, ry);
-        tft.print(s);
+        tft->setTextColor(COL_CYAN, COL_BG);
+        tft->setCursor(rx, ry);
+        tft->print(s);
         ry += 10;
     };
     auto rval = [&](const char *s) {
-        tft.setTextColor(COL_YELLOW, COL_BG);
-        tft.setCursor(rx + 4, ry);
-        tft.print(s);
+        tft->setTextColor(COL_YELLOW, COL_BG);
+        tft->setCursor(rx + 4, ry);
+        tft->print(s);
         ry += 10;
     };
     auto rvalFmt = [&](const char *fmt, ...) {
@@ -359,8 +367,8 @@ void drawRadarPanel(bool showInfo) {
     const int y = RADAR_Y;
     uint32_t now = millis();
 
-    tft.fillRect(0, y, SCR_W, RADAR_H, COL_BG);
-    tft.drawFastHLine(0, y, SCR_W, COL_BORDER);
+    tft->fillRect(0, y, SCR_W, RADAR_H, COL_BG);
+    tft->drawFastHLine(0, y, SCR_W, COL_BORDER);
 
     // ── Clock — top-left of radar strip ──────────────────────────────────
     struct tm ti;
@@ -370,21 +378,21 @@ void drawRadarPanel(bool showInfo) {
         strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &ti);
         curSec = ti.tm_sec;
     }
-    tft.setTextColor(COL_GREEN, COL_BG);
-    tft.setTextSize(2);
-    tft.setCursor(4, y + 4);
-    tft.print(timebuf);
+    tft->setTextColor(COL_GREEN, COL_BG);
+    tft->setTextSize(2);
+    tft->setCursor(4, y + 4);
+    tft->print(timebuf);
 
     // Connection badge
-    tft.setTextSize(1);
+    tft->setTextSize(1);
     if (wifiMgr.isAP()) {
-        tft.setTextColor(COL_ORANGE, COL_BG);
-        tft.setCursor(4, y + 24);
-        tft.printf("AP: %s", wifiMgr.localIP.c_str());
+        tft->setTextColor(COL_ORANGE, COL_BG);
+        tft->setCursor(4, y + 24);
+        tft->printf("AP: %s", wifiMgr.localIP.c_str());
     } else if (wifiMgr.isConnected()) {
-        tft.setTextColor(COL_DKGREEN, COL_BG);
-        tft.setCursor(4, y + 24);
-        tft.printf("%s", wifiMgr.localIP.c_str());
+        tft->setTextColor(COL_DKGREEN, COL_BG);
+        tft->setCursor(4, y + 24);
+        tft->printf("%s", wifiMgr.localIP.c_str());
     }
 
     // ── Animated bars — left side ─────────────────────────────────────────
@@ -400,33 +408,33 @@ void drawRadarPanel(bool showInfo) {
     const int ra  = 78;           // horizontal radius
     const int rb  = 24;           // vertical radius
 
-    tft.drawEllipse(rx, ry2, ra, rb, COL_GREEN);
-    tft.drawEllipse(rx, ry2, ra-1, rb-1, COL_DKGREEN); // double border
-    tft.drawEllipse(rx, ry2, ra/2, rb/2, COL_DKGREEN);
-    tft.drawFastHLine(rx - ra, ry2, 2*ra, COL_DKGREEN);
-    tft.drawFastVLine(rx, ry2 - rb, 2*rb, COL_DKGREEN);
+    tft->drawEllipse(rx, ry2, ra, rb, COL_GREEN);
+    tft->drawEllipse(rx, ry2, ra-1, rb-1, COL_DKGREEN); // double border
+    tft->drawEllipse(rx, ry2, ra/2, rb/2, COL_DKGREEN);
+    tft->drawFastHLine(rx - ra, ry2, 2*ra, COL_DKGREEN);
+    tft->drawFastVLine(rx, ry2 - rb, 2*rb, COL_DKGREEN);
 
     // Player centre dot
-    tft.fillCircle(rx, ry2, 3, COL_GREEN);
+    tft->fillCircle(rx, ry2, 3, COL_GREEN);
 
     // Seconds blip — orbits the ellipse once per minute (0s=top/12-o'clock)
     float secAngle = (curSec * 6.0f - 90.0f) * DEG_TO_RAD;
     int bx = rx + (int)(cosf(secAngle) * ra * 0.65f);
     int by = ry2 + (int)(sinf(secAngle) * rb * 0.65f);
-    tft.fillCircle(bx, by, 4, COL_YELLOW);
-    tft.drawCircle(bx, by, 4, COL_WHITE);
+    tft->fillCircle(bx, by, 4, COL_YELLOW);
+    tft->drawCircle(bx, by, 4, COL_WHITE);
 
     // ── ELITE logo — centred below radar ─────────────────────────────────
-    tft.setTextColor(COL_YELLOW, COL_BG);
-    tft.setTextSize(2);
-    tft.setCursor(rx - 30, y + 62);
-    tft.print("ELITE");
+    tft->setTextColor(COL_YELLOW, COL_BG);
+    tft->setTextSize(2);
+    tft->setCursor(rx - 30, y + 62);
+    tft->print("ELITE");
 
     // ── Show/hide touch hint ──────────────────────────────────────────────
-    tft.setTextSize(1);
-    tft.setTextColor(COL_DKGREEN, COL_BG);
-    tft.setCursor(SCR_W - 100, y + 4);
-    tft.print(showInfo ? "[TAP:RADAR]" : "[TAP:INFO]");
+    tft->setTextSize(1);
+    tft->setTextColor(COL_DKGREEN, COL_BG);
+    tft->setCursor(SCR_W - 100, y + 4);
+    tft->print(showInfo ? "[TAP:RADAR]" : "[TAP:INFO]");
 }
 
 // =============================================================================
@@ -436,32 +444,32 @@ void drawRadarPanel(bool showInfo) {
 void renderShipFrame() {
     if (!g_spriteOK) {
         // Low memory fallback — clear ship area and skip
-        tft.fillRect(SHIP_SX, SHIP_SY, SHIP_SW, SHIP_SH, COL_BG);
+        tft->fillRect(SHIP_SX, SHIP_SY, SHIP_SW, SHIP_SH, COL_BG);
         return;
     }
 
-    shipSprite.fillSprite(COL_BG);
+    shipSprite->fillSprite(COL_BG);
 
     // Star-field
     for (int i = 0; i < 48; i++) {
-        shipSprite.drawPixel(stars[i].x, stars[i].y, stars[i].col);
+        shipSprite->drawPixel(stars[i].x, stars[i].y, stars[i].col);
     }
 
     // X-axis gentle oscillation for 3-D depth
     renderer.angleX = 15.0f + 12.0f * sinf(DEG_TO_RAD * renderer.angleY * 0.4f);
     renderer.shaded = g_shaded;
-    renderer.render(shipSprite, SHIPS[g_currentShip]);
+    renderer.render(*shipSprite, SHIPS[g_currentShip]);
 
-    shipSprite.pushSprite(SHIP_SX, SHIP_SY);
+    shipSprite->pushSprite(SHIP_SX, SHIP_SY);
 }
 
 // =============================================================================
 //  flashTouchZone() — brief border flash as visual tap feedback
 // =============================================================================
 void flashTouchZone(int x1, int y1, int x2, int y2) {
-    tft.drawRect(x1, y1, x2-x1, y2-y1, COL_GREEN);
+    tft->drawRect(x1, y1, x2-x1, y2-y1, COL_GREEN);
     delay(35);
-    tft.drawRect(x1, y1, x2-x1, y2-y1, COL_BG);
+    tft->drawRect(x1, y1, x2-x1, y2-y1, COL_BG);
 }
 
 // =============================================================================
@@ -533,6 +541,15 @@ void handleTouch() {
 //  SETUP
 // =============================================================================
 void setup() {
+    // 0. Disable hardware watchdog BEFORE constructing TFT_eSPI.
+    //    TFT_eSPI's SPI.begin() on ESP32-C3 / framework 2.0.18 takes long
+    //    enough to fire the 5s watchdog causing an infinite reboot loop.
+    esp_task_wdt_deinit();
+
+    // Construct display objects now that watchdog is off
+    tft        = new TFT_eSPI();
+    shipSprite = new TFT_eSprite(tft);
+
     Serial.begin(115200);
     delay(200);
 
@@ -558,21 +575,21 @@ void setup() {
         ArduinoOTA.setHostname("eliteclock");
         ArduinoOTA.setPassword("eliteota");
         ArduinoOTA.onStart([]() {
-            tft.fillScreen(COL_BG);
-            tft.setTextColor(COL_YELLOW, COL_BG); tft.setTextSize(2);
-            tft.setCursor(120, 130); tft.println("OTA UPDATE");
-            tft.setTextSize(1); tft.setCursor(130, 160); tft.println("Do not power off...");
+            tft->fillScreen(COL_BG);
+            tft->setTextColor(COL_YELLOW, COL_BG); tft->setTextSize(2);
+            tft->setCursor(120, 130); tft->println("OTA UPDATE");
+            tft->setTextSize(1); tft->setCursor(130, 160); tft->println("Do not power off...");
         });
         ArduinoOTA.onProgress([](unsigned int prog, unsigned int total) {
             int pct = prog * 100 / total;
-            tft.fillRect(80, 185, 320, 16, COL_BG);
-            tft.fillRect(80, 185, pct * 320 / 100, 14, COL_DKGREEN);
-            tft.setTextColor(COL_GREEN, COL_BG); tft.setTextSize(1);
-            tft.setCursor(230, 187); tft.printf("%3d%%", pct);
+            tft->fillRect(80, 185, 320, 16, COL_BG);
+            tft->fillRect(80, 185, pct * 320 / 100, 14, COL_DKGREEN);
+            tft->setTextColor(COL_GREEN, COL_BG); tft->setTextSize(1);
+            tft->setCursor(230, 187); tft->printf("%3d%%", pct);
         });
         ArduinoOTA.onEnd([]() {
-            tft.setCursor(150, 210); tft.setTextColor(COL_GREEN, COL_BG);
-            tft.println("Complete - rebooting");
+            tft->setCursor(150, 210); tft->setTextColor(COL_GREEN, COL_BG);
+            tft->println("Complete - rebooting");
         });
         ArduinoOTA.onError([](ota_error_t e) { (void)e; });
         ArduinoOTA.begin();
@@ -582,37 +599,37 @@ void setup() {
     haMqtt.begin();
 
     // 7. Display (landscape, rotation 1)
-    tft.init();
-    tft.setRotation(1);   // landscape: 480×320
-    tft.invertDisplay(true);  // ST7796 panels are colour-inverted by default;
+    tft->init();
+    tft->setRotation(1);   // landscape: 480×320
+    tft->invertDisplay(true);  // ST7796 panels are colour-inverted by default;
                                // without this, black renders as white.
-    tft.fillScreen(COL_BG);
-    tft.setTextFont(1);
-    tft.setTextSize(1);
+    tft->fillScreen(COL_BG);
+    tft->setTextFont(1);
+    tft->setTextSize(1);
 
     // Boot splash
-    tft.setTextColor(COL_YELLOW, COL_BG); tft.setTextSize(2);
-    tft.setCursor(130, 100); tft.print("** ELITE CLOCK **");
-    tft.setTextSize(1); tft.setTextColor(COL_GREEN, COL_BG);
-    tft.setCursor(180, 130); tft.print("BBC Micro Edition");
-    tft.setCursor(155, 145); tft.printf("480x320 ST7796 v1.2");
+    tft->setTextColor(COL_YELLOW, COL_BG); tft->setTextSize(2);
+    tft->setCursor(130, 100); tft->print("** ELITE CLOCK **");
+    tft->setTextSize(1); tft->setTextColor(COL_GREEN, COL_BG);
+    tft->setCursor(180, 130); tft->print("BBC Micro Edition");
+    tft->setCursor(155, 145); tft->printf("480x320 ST7796 v1.2");
 
-    tft.setCursor(160, 170);
+    tft->setCursor(160, 170);
     if (wifiMgr.isConnected()) {
-        tft.setTextColor(COL_GREEN, COL_BG);
-        tft.printf("WIFI: %s", wifiMgr.localIP.c_str());
+        tft->setTextColor(COL_GREEN, COL_BG);
+        tft->printf("WIFI: %s", wifiMgr.localIP.c_str());
     } else if (wifiMgr.isAP()) {
-        tft.setTextColor(COL_ORANGE, COL_BG);
-        tft.printf("AP: %s  %s", AP_SSID, wifiMgr.localIP.c_str());
+        tft->setTextColor(COL_ORANGE, COL_BG);
+        tft->printf("AP: %s  %s", AP_SSID, wifiMgr.localIP.c_str());
     }
 
     // 8. Sprite (180×218)
-    g_spriteOK = (bool)shipSprite.createSprite(SHIP_SW, SHIP_SH);
+    g_spriteOK = (bool)shipSprite->createSprite(SHIP_SW, SHIP_SH);
     if (g_spriteOK) {
-        shipSprite.setColorDepth(16);
+        shipSprite->setColorDepth(16);
     } else {
-        tft.setTextColor(COL_ORANGE, COL_BG);
-        tft.setCursor(160, 190); tft.print("LOW MEM — no sprite");
+        tft->setTextColor(COL_ORANGE, COL_BG);
+        tft->setCursor(160, 190); tft->print("LOW MEM — no sprite");
     }
 
     // 9. Touch + stars
@@ -623,7 +640,7 @@ void setup() {
     delay(1200);
 
     // 10. Main UI
-    tft.fillScreen(COL_BG);
+    tft->fillScreen(COL_BG);
     drawHeader();
     drawShipInfo();
     drawRadarPanel(false);
