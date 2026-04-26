@@ -40,8 +40,10 @@
 #include "ha_mqtt.h"
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
-#define TOUCH_CS_PIN   9
-#define TOUCH_IRQ_PIN  10
+// Display SPI pins are defined in platformio.ini build_flags (TFT_MOSI etc.)
+// Touch controller uses its own CS and IRQ — kept on GPIOs not used by display
+#define TOUCH_CS_PIN   9    // T_CS  — shares SPI bus (MOSI=4, SCK=2, MISO=6)
+#define TOUCH_IRQ_PIN  10   // T_IRQ
 
 // ── Display layout (landscape 480x320) ───────────────────────────────────────
 #define SCR_W         480
@@ -92,9 +94,13 @@ static const uint16_t BAR_DIM[6] = {
     0x0180u, 0x0300u, 0x2560u, 0x6460u, 0x5820u, 0x4000u
 };
 
+// ── Display SPI pin for backlight (matches -DTFT_BL=8 in platformio.ini) ─────
+#define TFT_BL_PIN  8
+
 // ── Global state (shared with web_ui.h / ha_mqtt.h) ──────────────────────────
 uint8_t  g_currentShip         = 0;
 bool     g_shaded               = false;
+bool     g_backlightOn          = true;
 float    g_rotSpeed             = 0.6f;
 uint16_t g_shipDuration         = 30;
 bool     g_shipChanged          = false;
@@ -121,6 +127,13 @@ uint32_t lastClockDraw  = 0;
 uint32_t lastHaPublish  = 0;
 uint32_t lastTouchTime  = 0;
 bool     touchWasDown   = false;
+
+// ── Backlight control ─────────────────────────────────────────────────────────
+void setBacklight(bool on) {
+    g_backlightOn = on;
+    digitalWrite(TFT_BL_PIN, on ? HIGH : LOW);
+    if (haMqtt.connected) haMqtt.publishState();
+}
 
 // ── Pre-computed star-field ───────────────────────────────────────────────────
 struct Star { int16_t x, y; uint16_t col; };
@@ -586,6 +599,11 @@ void setup() {
     // cause colour corruption on some panels.
     tft->init();
     tft->setRotation(1);        // landscape 480x320
+    // Initialise backlight GPIO — TFT_eSPI sets it HIGH in init() but we
+    // take explicit control here so setBacklight() works correctly.
+    pinMode(TFT_BL_PIN, OUTPUT);
+    digitalWrite(TFT_BL_PIN, HIGH);
+    g_backlightOn = true;
     tft->fillScreen(COL_BG);
     tft->setTextFont(1);
     tft->setTextSize(1);

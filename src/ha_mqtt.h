@@ -5,55 +5,52 @@
 //  Auto-discovery entities created in HA:
 //    • select   — Ship Selection  (all ship names as options)
 //    • switch   — Shaded Mode
+//    • switch   — Backlight (on/off)
 //    • number   — Rotation Speed  (0.1 – 5.0 °/frame, step 0.1)
 //    • number   — Ship Duration   (10 – 600 s, step 5)
 //    • button   — Previous Ship
 //    • button   — Next Ship
-//
-//  IMPORTANT: We call _mqtt->setBufferSize(1024) before connecting because
-//  the ship select discovery payload (~700 bytes with 19 ship names) exceeds
-//  PubSubClient's default 256-byte limit and would be silently dropped.
 // =============================================================================
 
 #include <PubSubClient.h>
 #include <WiFiClient.h>
 #include <ArduinoJson.h>
 #include "settings.h"
-#include "ships.h"    // for SHIPS[] and NUM_SHIPS directly
+#include "ships.h"
 
 // Forward declarations from main.cpp
 extern uint8_t  g_currentShip;
 extern bool     g_shaded;
+extern bool     g_backlightOn;
 extern float    g_rotSpeed;
 extern uint16_t g_shipDuration;
 extern bool     g_shipChanged;
-extern void     seedStars(uint8_t idx);  // re-seed star-field on ship change
+extern void     seedStars(uint8_t idx);
+extern void     setBacklight(bool on);
 
 #define HA_DEVICE_ID    "eliteclock"
 #define HA_DEVICE_NAME  "Elite Clock"
 #define HA_DISC_PFX     "homeassistant"
 #define HA_BASE         "eliteclock"
 
-// ── Topic strings ─────────────────────────────────────────────────────────────
 static const char *TOPIC_STATE    = HA_BASE "/state";
 static const char *TOPIC_CMD_SHIP = HA_BASE "/ship/set";
 static const char *TOPIC_CMD_SHAD = HA_BASE "/shaded/set";
+static const char *TOPIC_CMD_BL   = HA_BASE "/backlight/set";
 static const char *TOPIC_CMD_ROT  = HA_BASE "/rotspeed/set";
 static const char *TOPIC_CMD_DUR  = HA_BASE "/duration/set";
 static const char *TOPIC_CMD_PREV = HA_BASE "/prev/set";
 static const char *TOPIC_CMD_NEXT = HA_BASE "/next/set";
 
-// ── MQTT payload buffer (must hold the select discovery with all ship names) ─
 #define MQTT_BUFFER_SIZE  1024
 
-// ── Shared device block helper ─────────────────────────────────────────────────
 static void addDeviceBlock(JsonDocument &doc) {
-    JsonObject dev       = doc.createNestedObject("device");
+    JsonObject dev        = doc.createNestedObject("device");
     dev["identifiers"][0] = HA_DEVICE_ID;
     dev["name"]           = HA_DEVICE_NAME;
     dev["manufacturer"]   = "DIY";
-    dev["model"]          = "ESP32-C3 240x320";
-    dev["sw_version"]     = "1.1";
+    dev["model"]          = "ESP32-C3 ILI9488 480x320";
+    dev["sw_version"]     = "1.3";
 }
 
 // =============================================================================
@@ -85,11 +82,12 @@ public:
     void publishState() {
         if (!connected) return;
         StaticJsonDocument<256> doc;
-        doc["ship"]     = SHIPS[g_currentShip].name;
-        doc["shipIdx"]  = g_currentShip;
-        doc["shaded"]   = g_shaded ? "ON" : "OFF";
-        doc["rotSpeed"] = g_rotSpeed;
-        doc["duration"] = g_shipDuration;
+        doc["ship"]       = SHIPS[g_currentShip].name;
+        doc["shipIdx"]    = g_currentShip;
+        doc["shaded"]     = g_shaded      ? "ON" : "OFF";
+        doc["backlight"]  = g_backlightOn ? "ON" : "OFF";
+        doc["rotSpeed"]   = g_rotSpeed;
+        doc["duration"]   = g_shipDuration;
         char buf[256];
         serializeJson(doc, buf, sizeof(buf));
         _mqtt->publish(TOPIC_STATE, buf, true);
@@ -120,6 +118,7 @@ private:
             _mqtt->publish(HA_BASE "/status", "online", true);
             _mqtt->subscribe(TOPIC_CMD_SHIP);
             _mqtt->subscribe(TOPIC_CMD_SHAD);
+            _mqtt->subscribe(TOPIC_CMD_BL);
             _mqtt->subscribe(TOPIC_CMD_ROT);
             _mqtt->subscribe(TOPIC_CMD_DUR);
             _mqtt->subscribe(TOPIC_CMD_PREV);
@@ -136,6 +135,7 @@ private:
     void publishDiscovery() {
         publishShipSelect();
         publishShadedSwitch();
+        publishBacklightSwitch();
         publishRotSpeed();
         publishDuration();
         publishPrevButton();
@@ -184,7 +184,25 @@ private:
             (uint8_t *)buf, n, true);
     }
 
-    // 3. Rotation speed number slider
+    // 3. Backlight switch
+    void publishBacklightSwitch() {
+        StaticJsonDocument<384> doc;
+        doc["name"]           = "Backlight";
+        doc["unique_id"]      = "eliteclock_backlight";
+        doc["command_topic"]  = TOPIC_CMD_BL;
+        doc["state_topic"]    = TOPIC_STATE;
+        doc["value_template"] = "{{ value_json.backlight }}";
+        doc["payload_on"]     = "ON";
+        doc["payload_off"]    = "OFF";
+        doc["icon"]           = "mdi:brightness-6";
+        addDeviceBlock(doc);
+        char buf[384]; size_t n = serializeJson(doc, buf, sizeof(buf));
+        _mqtt->publish(
+            HA_DISC_PFX "/switch/" HA_DEVICE_ID "_backlight/config",
+            (uint8_t *)buf, n, true);
+    }
+
+    // 4. Rotation speed number slider
     void publishRotSpeed() {
         StaticJsonDocument<384> doc;
         doc["name"]             = "Rotation Speed";
@@ -204,7 +222,7 @@ private:
             (uint8_t *)buf, n, true);
     }
 
-    // 4. Ship duration number slider
+    // 5. Ship duration number slider
     void publishDuration() {
         StaticJsonDocument<384> doc;
         doc["name"]             = "Ship Duration";
@@ -224,7 +242,7 @@ private:
             (uint8_t *)buf, n, true);
     }
 
-    // 5. Previous ship button
+    // 6. Previous ship button
     void publishPrevButton() {
         StaticJsonDocument<256> doc;
         doc["name"]           = "Previous Ship";
@@ -239,7 +257,7 @@ private:
             (uint8_t *)buf, n, true);
     }
 
-    // 6. Next ship button
+    // 7. Next ship button
     void publishNextButton() {
         StaticJsonDocument<256> doc;
         doc["name"]           = "Next Ship";
@@ -284,6 +302,12 @@ private:
             g_shaded = (strcmp(val, "ON") == 0);
             settings.cfg.shaded = g_shaded;
             settings.save();
+            return;
+        }
+
+        // ── Backlight switch ───────────────────────────────────────────────
+        if (t == TOPIC_CMD_BL) {
+            setBacklight(strcmp(val, "ON") == 0);
             return;
         }
 
