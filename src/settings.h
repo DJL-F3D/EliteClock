@@ -11,24 +11,27 @@
 #include <Preferences.h>
 #include <string.h>
 
-#define SETTINGS_MAGIC  0xEC19840Bu   // bump when struct layout or defaults change
+#define SETTINGS_MAGIC  0xEC19840Cu   // bump when struct layout or defaults change
 
 struct Settings {
-    uint32_t magic;           // must equal SETTINGS_MAGIC — version sentinel
+    uint32_t magic;
 
     // Wi-Fi
     char     wifiSSID[64];
     char     wifiPass[64];
 
     // Time
-    int8_t   gmtOffset;       // -12 .. +14
+    int8_t   gmtOffset;
     bool     dstEnabled;
 
     // Ship display
-    uint8_t  currentShip;     // index into SHIPS[]
-    bool     shaded;          // true = flat shaded, false = wireframe
-    float    rotSpeed;        // degrees per frame (0.1..5.0)
-    uint16_t shipDuration;    // seconds before next ship (10..600)
+    uint8_t  currentShip;
+    bool     shaded;
+    float    rotSpeed;
+    uint16_t shipDuration;
+
+    // Commander name shown in header
+    char     cmdName[24];     // e.g. "CMDR JAMESON"
 
     // Home Assistant MQTT
     char     haHost[64];
@@ -44,8 +47,9 @@ struct Settings {
         currentShip  = 0;
         shaded       = false;
         rotSpeed     = 0.6f;
-        shipDuration = 60;    // 60 seconds per ship
+        shipDuration = 60;
         haMqttPort   = 1883;
+        strncpy(cmdName, "CMDR JAMESON", sizeof(cmdName) - 1);
     }
 };
 

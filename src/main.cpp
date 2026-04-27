@@ -57,10 +57,16 @@
 #define COL_GREEN   0x07E0u
 #define COL_DKGREEN 0x0320u
 #define COL_ORANGE  0xFD20u
-#define COL_BORDER  0x0260u
+#define COL_BORDER  0x07E0u   // bright green (was dark 0x0260)
 
-static const uint16_t BAR_DIM[6] = {
-    0x0180u, 0x0300u, 0x2560u, 0x6460u, 0x5820u, 0x4000u
+// Bar colors matching BBC Elite screenshot: red bottom → cyan top
+static const uint16_t BAR_COLS[6] = {
+    0xF800u,   // i=0 bottom: red
+    0xFD20u,   // i=1: orange  
+    0xFFE0u,   // i=2: yellow
+    0x87E0u,   // i=3: yellow-green
+    0x07E0u,   // i=4: green
+    0x07FFu,   // i=5 top: cyan
 };
 
 // ── Global state ──────────────────────────────────────────────────────────────
@@ -74,6 +80,7 @@ int      g_shipChangeDir        = 1;
 bool     g_showInfo             = false;
 bool     g_wifiReconnectPending = false;
 bool     g_spriteOK             = false;
+bool     g_radarNeedsReset      = true;   // full radar redraw on next call
 
 // ── Hardware objects ──────────────────────────────────────────────────────────
 // Pointer to avoid any global-constructor timing issues during boot
@@ -135,7 +142,7 @@ static const char* laserStr(uint8_t l) {
 //  wave periods — organic, non-synchronised movement like the original game.
 // =============================================================================
 void drawAnimBars(int16_t x, int16_t y, int16_t w, uint32_t now) {
-    static const uint32_t periods[6] = {1900, 1400, 2300, 1600, 2100, 1200};
+    static const uint32_t periods[6] = {5700, 4200, 6900, 4800, 6300, 3600};  // 3× slower
     static const uint32_t offsets[6] = {   0,  500,  250,  750,  125,  625};
     for (int i = 0; i < 6; i++) {
         int16_t by    = y + (5 - i) * 9;
@@ -144,7 +151,7 @@ void drawAnimBars(int16_t x, int16_t y, int16_t w, uint32_t now) {
         float    fill  = 0.40f + 0.60f * (0.5f + 0.5f * sinf(phase * 6.28318f));
         int16_t fillW  = (int16_t)((float)w * fill);
         int16_t gapW   = w - fillW;
-        tft->fillRect(x,          by, fillW, 10, BAR_DIM[i]);
+        tft->fillRect(x,          by, fillW, 10, BAR_COLS[i]);
         if (gapW > 0)
             tft->fillRect(x + fillW, by, gapW, 10, COL_BG);
     }
@@ -155,33 +162,40 @@ void drawAnimBars(int16_t x, int16_t y, int16_t w, uint32_t now) {
 // =============================================================================
 void drawHeader() {
     tft->fillRect(0, 0, SCR_W, HDR_H, COL_BG);
+    tft->drawFastHLine(0, HDR_H - 2, SCR_W, COL_BORDER);
     tft->drawFastHLine(0, HDR_H - 1, SCR_W, COL_BORDER);
 
-    tft->setTextSize(1);
-    tft->setTextColor(COL_DKGREEN, COL_BG);
-    tft->setCursor(2, 7);  tft->print("<<");
-    tft->setCursor(SCR_W - 14, 7); tft->print(">>");
-
-    const char *name = SHIPS[g_currentShip].name;
     tft->setTextSize(2);
-    int tw = strlen(name) * 12;
+
+    // Left: commander name (from settings, editable via web UI / HA)
     tft->setTextColor(COL_YELLOW, COL_BG);
-    tft->setCursor((SCR_W - tw) / 2, 4);
+    tft->setCursor(3, 3);
+    tft->print(settings.cfg.cmdName);
+
+    // Centre: ship name
+    const char *name = SHIPS[g_currentShip].name;
+    int tw = strlen(name) * 12;
+    tft->setTextColor(COL_WHITE, COL_BG);
+    tft->setCursor((SCR_W - tw) / 2, 3);
     tft->print(name);
 
+    // Right: clock (HH:MM:SS, updated every second from loop)
+    struct tm ti;
+    char timebuf[12] = "--:--:--";
+    if (getLocalTime(&ti, 0)) strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &ti);
+    else snprintf(timebuf, sizeof(timebuf), "%02lu:%02lu:%02lu",
+                  (millis()/3600000UL)%24, (millis()/60000UL)%60, (millis()/1000UL)%60);
+    tft->setTextColor(COL_GREEN, COL_BG);
+    tft->setCursor(SCR_W - 98, 3);    // 8 chars × 12px = 96px
+    tft->print(timebuf);
+
+    // Shaded badge (small, below clock)
     if (g_shaded) {
         tft->setTextSize(1);
         tft->setTextColor(COL_ORANGE, COL_BG);
-        tft->setCursor(20, 7);
-        tft->print("[SHAD]");
+        tft->setCursor(SCR_W - 40, 8);
+        tft->print("[SHD]");
     }
-
-    char idx[8];
-    snprintf(idx, sizeof(idx), "%d/%d", g_currentShip + 1, NUM_SHIPS);
-    tft->setTextSize(1);
-    tft->setTextColor(COL_DKGREEN, COL_BG);
-    tft->setCursor(SCR_W - 30, 7);
-    tft->print(idx);
 }
 
 // =============================================================================
@@ -194,8 +208,10 @@ void drawShipInfo() {
 
     tft->fillRect(0,               HDR_H, LEFT_W,  SHIP_SH, COL_BG);
     tft->fillRect(SCR_W - RIGHT_W, HDR_H, RIGHT_W, SHIP_SH, COL_BG);
-    tft->drawFastVLine(LEFT_W - 1,      HDR_H, SHIP_SH, COL_BORDER);
-    tft->drawFastVLine(SCR_W - RIGHT_W, HDR_H, SHIP_SH, COL_BORDER);
+    tft->drawFastVLine(LEFT_W - 2,          HDR_H, SHIP_SH, COL_BORDER);
+    tft->drawFastVLine(LEFT_W - 1,          HDR_H, SHIP_SH, COL_BORDER);
+    tft->drawFastVLine(SCR_W - RIGHT_W,     HDR_H, SHIP_SH, COL_BORDER);
+    tft->drawFastVLine(SCR_W - RIGHT_W + 1, HDR_H, SHIP_SH, COL_BORDER);
 
     tft->setTextSize(1);
     int lx = 3, ly = HDR_H + 5;
@@ -205,7 +221,7 @@ void drawShipInfo() {
         tft->setCursor(lx, ly); tft->print(s); ly += 10;
     };
     auto val = [&](const char *s) {
-        tft->setTextColor(COL_YELLOW, COL_BG);
+        tft->setTextColor(TFT_WHITE, COL_BG);   // white values match BBC screenshot
         tft->setCursor(lx + 4, ly); tft->print(s); ly += 10;
     };
 
@@ -249,7 +265,7 @@ void drawShipInfo() {
         tft->setCursor(rx, ry); tft->print(s); ry += 10;
     };
     auto rval = [&](const char *s) {
-        tft->setTextColor(COL_YELLOW, COL_BG);
+        tft->setTextColor(TFT_WHITE, COL_BG);   // white values
         tft->setCursor(rx + 4, ry); tft->print(s); ry += 10;
     };
     auto rvalFmt = [&](const char *fmt, ...) {
@@ -280,63 +296,82 @@ void drawShipInfo() {
 // =============================================================================
 //  drawRadarPanel()
 // =============================================================================
+//  drawRadarPanel() — flash-free; clock moved to header; red radar ellipse
+// =============================================================================
 void drawRadarPanel(bool showInfo) {
     const int y   = RADAR_Y;
     uint32_t  now = millis();
+    const int rx  = SCR_W / 2, ry2 = y + 44, ra = 78, rb = 24;
 
-    tft->fillRect(0, y, SCR_W, RADAR_H, COL_BG);
-    tft->drawFastHLine(0, y, SCR_W, COL_BORDER);
+    static int  s_prevBX = -1, s_prevBY = -1;
 
-    struct tm ti;
-    char timebuf[12] = "--:--:--";
-    int  curSec = (millis() / 1000) % 60;  // fallback: always moves
-    if (getLocalTime(&ti, 0)) {
-        strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &ti);
-        curSec = ti.tm_sec;
-    }
+    if (g_radarNeedsReset) {
+        g_radarNeedsReset = false;
+        s_prevBX = s_prevBY = -1;
 
-    tft->setTextColor(COL_GREEN, COL_BG);
-    tft->setTextSize(2);
-    tft->setCursor(4, y + 4);
-    tft->print(timebuf);
+        tft->fillRect(0, y, SCR_W, RADAR_H, COL_BG);
+        tft->drawFastHLine(0, y,   SCR_W, COL_BORDER);
+        tft->drawFastHLine(0, y+1, SCR_W, COL_BORDER);
 
-    tft->setTextSize(1);
-    if (wifiMgr.isAP()) {
-        tft->setTextColor(COL_ORANGE, COL_BG);
-        tft->setCursor(4, y + 24);
-        tft->printf("AP: %s", wifiMgr.localIP.c_str());
-    } else if (wifiMgr.isConnected()) {
+        // Radar ellipse — RED as per BBC screenshot
+        tft->drawEllipse(rx, ry2, ra,     rb,     TFT_RED);
+        tft->drawEllipse(rx, ry2, ra - 1, rb - 1, 0xC000u);  // dark red inner
+        tft->drawEllipse(rx, ry2, ra / 2, rb / 2, 0xC000u);
+        tft->drawFastHLine(rx - ra, ry2, 2*ra, 0xC000u);
+        tft->drawFastVLine(rx, ry2 - rb, 2*rb, 0xC000u);
+        tft->fillCircle(rx, ry2, 3, TFT_RED);
+
+        // ELITE logo
+        tft->setTextColor(COL_YELLOW, COL_BG);
+        tft->setTextSize(2);
+        tft->setCursor(rx - 30, y + 62);
+        tft->print("ELITE");
+
+        // Touch hint
+        tft->setTextSize(1);
         tft->setTextColor(COL_DKGREEN, COL_BG);
-        tft->setCursor(4, y + 24);
-        tft->printf("%s", wifiMgr.localIP.c_str());
+        tft->setCursor(SCR_W - 100, y + 4);
+        tft->print(showInfo ? "[TAP:INFO]" : "[TAP:INFO]");
+
+        // IP / AP badge — top of radar strip, right of bars
+        if (wifiMgr.isAP()) {
+            tft->setTextColor(COL_ORANGE, COL_BG);
+            tft->setCursor(68, y + 4);
+            tft->printf("AP %s", wifiMgr.localIP.c_str());
+        } else if (wifiMgr.isConnected()) {
+            tft->setTextColor(COL_DKGREEN, COL_BG);
+            tft->setCursor(68, y + 4);
+            tft->printf("%s", wifiMgr.localIP.c_str());
+        }
+
+        drawAnimBars(4,          y + 14, 55, now);
+        drawAnimBars(SCR_W - 60, y + 14, 55, now + 300);
+    } else {
+        // Incremental: erase old blip, restore ellipse
+        if (s_prevBX >= 0) {
+            tft->fillCircle(s_prevBX, s_prevBY, 5, COL_BG);
+            tft->drawEllipse(rx, ry2, ra,     rb,     TFT_RED);
+            tft->drawEllipse(rx, ry2, ra - 1, rb - 1, 0xC000u);
+            tft->drawEllipse(rx, ry2, ra / 2, rb / 2, 0xC000u);
+            tft->drawFastHLine(rx - ra, ry2, 2*ra, 0xC000u);
+            tft->drawFastVLine(rx, ry2 - rb, 2*rb, 0xC000u);
+            tft->fillCircle(rx, ry2, 3, TFT_RED);
+        }
+        drawAnimBars(4,          y + 14, 55, now);
+        drawAnimBars(SCR_W - 60, y + 14, 55, now + 300);
     }
 
-    drawAnimBars(4,          y + 5, 55, now);
-    drawAnimBars(SCR_W - 60, y + 5, 55, now + 300);
-
-    const int rx = SCR_W / 2, ry2 = y + 44, ra = 78, rb = 24;
-    tft->drawEllipse(rx, ry2, ra,     rb,     COL_GREEN);
-    tft->drawEllipse(rx, ry2, ra - 1, rb - 1, COL_DKGREEN);
-    tft->drawEllipse(rx, ry2, ra / 2, rb / 2, COL_DKGREEN);
-    tft->drawFastHLine(rx - ra, ry2, 2*ra, COL_DKGREEN);
-    tft->drawFastVLine(rx, ry2 - rb, 2*rb, COL_DKGREEN);
-    tft->fillCircle(rx, ry2, 3, COL_GREEN);
+    // Seconds blip
+    int  curSec = (millis() / 1000) % 60;
+    struct tm ti;
+    if (getLocalTime(&ti, 0)) curSec = ti.tm_sec;
 
     float ang = (curSec * 6.0f - 90.0f) * DEG_TO_RAD;
     int bx = rx + (int)(cosf(ang) * ra * 0.65f);
-    int by = ry2 + (int)(sinf(ang) * rb * 0.65f);
-    tft->fillCircle(bx, by, 4, COL_YELLOW);
-    tft->drawCircle(bx, by, 4, COL_WHITE);
-
-    tft->setTextColor(COL_YELLOW, COL_BG);
-    tft->setTextSize(2);
-    tft->setCursor(rx - 30, y + 62);
-    tft->print("ELITE");
-
-    tft->setTextSize(1);
-    tft->setTextColor(COL_DKGREEN, COL_BG);
-    tft->setCursor(SCR_W - 100, y + 4);
-    tft->print(showInfo ? "[TAP:RADAR]" : "[TAP:INFO]");
+    int by2 = ry2 + (int)(sinf(ang) * rb * 0.65f);
+    tft->fillCircle(bx, by2, 4, COL_YELLOW);
+    tft->drawCircle(bx, by2, 4, COL_WHITE);
+    s_prevBX = bx; s_prevBY = by2;
 }
 
 // =============================================================================
@@ -350,7 +385,8 @@ void renderShipFrame() {
     shipSprite->fillSprite(COL_BG);
     for (int i = 0; i < 48; i++)
         shipSprite->drawPixel(stars[i].x, stars[i].y, stars[i].col);
-    renderer.angleX = 15.0f + 12.0f * sinf(DEG_TO_RAD * renderer.angleY * 0.4f);
+    renderer.angleX += renderer.driftX;
+    if (renderer.angleX >= 360.0f) renderer.angleX -= 360.0f;
     renderer.shaded = g_shaded;
     renderer.render(*shipSprite, SHIPS[g_currentShip]);
     shipSprite->pushSprite(SHIP_SX, SHIP_SY);
@@ -407,6 +443,7 @@ void handleTouch() {
     // RADAR
     if (ty >= RADAR_Y) {
         g_showInfo = !g_showInfo;
+        g_radarNeedsReset = true;
         drawRadarPanel(g_showInfo);
         return;
     }
@@ -506,8 +543,14 @@ void setup() {
         tft->setCursor(140, 175); tft->print("LOW MEM — no sprite");
     }
 
-    // 9. Stars
+    // 9. Stars + initial random tumble orientation
     seedStars(g_currentShip);
+    srand(esp_random());
+    renderer.angleY = (float)(rand() % 360);
+    renderer.angleX = (float)(rand() % 360);
+    renderer.angleZ = (float)(rand() % 360);
+    renderer.driftX = ((float)((int)(rand() % 60) - 30)) / 100.0f;
+    renderer.driftZ = ((float)((int)(rand() % 40) - 20)) / 100.0f;
 
     delay(1500);
 
@@ -545,7 +588,13 @@ void loop() {
 
     if (g_shipChanged) {
         g_shipChanged = false;
-        renderer.angleY = 0.0f;
+        g_radarNeedsReset = true;
+        renderer.angleY = (float)(rand() % 360);
+        renderer.angleX = (float)(rand() % 360);
+        renderer.angleZ = (float)(rand() % 360);
+        // Random gentle drift on X and Z for organic tumble
+        renderer.driftX = ((float)((int)(rand() % 60) - 30)) / 100.0f;  // -0.3..+0.3°/f
+        renderer.driftZ = ((float)((int)(rand() % 40) - 20)) / 100.0f;  // -0.2..+0.2°/f
         seedStars(g_currentShip);
         drawHeader(); drawShipInfo(); drawRadarPanel(g_showInfo);
     }
@@ -554,6 +603,8 @@ void loop() {
         lastFrameTime    = now;
         renderer.angleY += g_rotSpeed;
         if (renderer.angleY >= 360.0f) renderer.angleY -= 360.0f;
+        renderer.angleZ += renderer.driftZ;
+        if (renderer.angleZ >= 360.0f) renderer.angleZ -= 360.0f;
         renderShipFrame();
     }
 
@@ -567,8 +618,8 @@ void loop() {
     // Bar animation only every 100ms (between full redraws)
     else if (now - lastBarDraw >= 100) {
         lastBarDraw = now;
-        drawAnimBars(4,          RADAR_Y + 5, 55, now);
-        drawAnimBars(SCR_W - 60, RADAR_Y + 5, 55, now + 300);
+        drawAnimBars(4,          RADAR_Y + 14, 55, now);
+        drawAnimBars(SCR_W - 60, RADAR_Y + 14, 55, now + 300);
     }
 
     if (g_wifiReconnectPending) {

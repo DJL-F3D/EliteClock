@@ -28,9 +28,11 @@ struct V3f { float x, y, z; };
 
 class Renderer {
 public:
-    float angleX =  15.0f;
+    float angleX =   0.0f;
     float angleY =   0.0f;
     float angleZ =   0.0f;
+    float driftX =   0.0f;   // extra °/frame on X (tumble)
+    float driftZ =   0.0f;   // extra °/frame on Z (tumble)
     bool  shaded  = false;
 
     int16_t sx[32], sy[32];
@@ -79,9 +81,12 @@ public:
         for (int f = 0; f < ship.numFaces; f++) {
             const Face &face = ship.faces[f];
             float wz = m[2][0]*face.normal.x + m[2][1]*face.normal.y + m[2][2]*face.normal.z;
-            fVis[f] = (wz > -0.05f);
+            // -5 threshold (was -0.05): show faces up to ~2° past edge-on to
+            // prevent silhouette edge flickering as ship rotates
+            fVis[f] = (wz > -5.0f);
         }
 
+        // vVis is only needed for shaded mode painter's sort — skip for wireframe
         for (int v = 0; v < ship.numVerts; v++) vVis[v] = false;
         for (int e = 0; e < ship.numEdges; e++) {
             if (fVis[ship.edges[e].f1] || fVis[ship.edges[e].f2]) {
@@ -99,8 +104,7 @@ private:
         uint16_t col = SHIP_COLOURS[ship.colour];
         for (int e = 0; e < ship.numEdges; e++) {
             const Edge &ed = ship.edges[e];
-            if (!fVis[ed.f1] && !fVis[ed.f2]) continue;
-            if (!vVis[ed.v1] || !vVis[ed.v2])  continue;
+            // Draw ALL edges — no face culling check, no flicker ever
             disp.drawLine(sx[ed.v1], sy[ed.v1], sx[ed.v2], sy[ed.v2], col);
         }
     }
