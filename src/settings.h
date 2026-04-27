@@ -11,7 +11,7 @@
 #include <Preferences.h>
 #include <string.h>
 
-#define SETTINGS_MAGIC  0xEC19840Au   // 'EC' + Elite year 1984 + version 0xA
+#define SETTINGS_MAGIC  0xEC19840Bu   // bump when struct layout or defaults change
 
 struct Settings {
     uint32_t magic;           // must equal SETTINGS_MAGIC — version sentinel
@@ -44,7 +44,7 @@ struct Settings {
         currentShip  = 0;
         shaded       = false;
         rotSpeed     = 0.6f;
-        shipDuration = 30;
+        shipDuration = 60;    // 60 seconds per ship
         haMqttPort   = 1883;
     }
 };
